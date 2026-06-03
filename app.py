@@ -74,16 +74,6 @@ def preparar_datas(df, coluna):
 
 
 def montar_empresa_analise(row, col_empresa, col_de):
-    """
-    Regra principal: usa a coluna Empresa.
-
-    Correção especial CBLOC:
-    Na base, várias filiais aparecem em 'De'.
-    Para o indicador de empresa que criou o chamado, CBLOC deve ser consolidada quando 'De' contém CBLOC.
-
-    Quando Empresa contém CBLOC, mas De é Casa do Construtor,
-    o chamado fica para Casa do Construtor.
-    """
     empresa = limpar_texto(row[col_empresa])
     de = limpar_texto(row[col_de]) if col_de else ""
 
@@ -100,8 +90,6 @@ def montar_empresa_analise(row, col_empresa, col_de):
 
 
 def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria):
-    # Preferência: Tipo + Item, pois representa melhor a solicitação real.
-    # Exemplo: Ramal - Configuração de ramal.
     if col_tipo and col_item:
         return (
             df[col_tipo].fillna("Não informado").astype(str).str.strip()
@@ -217,7 +205,7 @@ def gerar_excel_dashboard(
             ("SLA tratado", indicadores["sla_tratado"]),
             ("Dentro do SLA", indicadores["dentro_sla"]),
             ("Fora do SLA", indicadores["fora_sla"]),
-            ("Em aberto / sem encerramento", indicadores["em_aberto"]),
+            ("Em aberto / Em tratamento", indicadores["em_aberto"]),
             ("Tratados até 72h", indicadores["ate_72h"]),
             ("Acima 72h / abertos", indicadores["nao_72h"]),
         ]
@@ -329,14 +317,13 @@ def gerar_excel_dashboard(
         chart_qual.set_title({"name": "Top qualificações solicitadas"})
         worksheet.insert_chart("G39", chart_qual, {"x_scale": 1.5, "y_scale": 1.45})
 
-        # Abas auxiliares para auditoria
         resumo_empresas.to_excel(writer, sheet_name="Empresas", index=False)
         resumo_qualificacoes.to_excel(writer, sheet_name="Qualificações", index=False)
         resumo_sla.to_excel(writer, sheet_name="SLA", index=False)
         resumo_72h.to_excel(writer, sheet_name="72h", index=False)
         resumo_ofensor_sla.to_excel(writer, sheet_name="Ofensor_SLA", index=False)
         resumo_ofensor_72h.to_excel(writer, sheet_name="Ofensor_72h", index=False)
-        chamados_abertos.to_excel(writer, sheet_name="Abertos_sem_encerramento", index=False)
+        chamados_abertos.to_excel(writer, sheet_name="Abertos_Em_tratamento", index=False)
 
     output.seek(0)
     return output
@@ -400,7 +387,7 @@ try:
     total_empresas = df["Empresa Análise"].nunique()
 
     # SLA
-    df["Status SLA"] = "Em aberto / sem encerramento"
+    df["Status SLA"] = "Em aberto / Em tratamento"
     mask_fechado_com_prazo = df[col_encerramento].notna() & df[col_vencimento].notna()
 
     df.loc[
@@ -416,7 +403,7 @@ try:
     sla_tratado = int(mask_fechado_com_prazo.sum())
     dentro_sla = int((df["Status SLA"] == "Dentro do SLA").sum())
     fora_sla = int((df["Status SLA"] == "Fora do SLA").sum())
-    em_aberto = int((df["Status SLA"] == "Em aberto / sem encerramento").sum())
+    em_aberto = int((df["Status SLA"] == "Em aberto / Em tratamento").sum())
     percentual_dentro_sla = (dentro_sla / sla_tratado * 100) if sla_tratado > 0 else 0
 
     # 72 horas
@@ -430,7 +417,7 @@ try:
         ).dt.total_seconds() / 3600
     )
 
-    df["Status 72h"] = "Em aberto / sem encerramento"
+    df["Status 72h"] = "Em aberto / Em tratamento"
 
     df.loc[
         mask_fechado_com_abertura & (df["Horas para tratamento"] <= 72),
@@ -502,7 +489,7 @@ try:
         "ofensor_72h_qtd": ofensor_72h_qtd,
     }
 
-    # Tabela dos chamados sem encerramento
+    # Tabela dos chamados em aberto / em tratamento
     colunas_abertos = []
 
     for c in [
@@ -521,7 +508,7 @@ try:
         if c and c not in colunas_abertos:
             colunas_abertos.append(c)
 
-    chamados_abertos = df.loc[df["Status SLA"] == "Em aberto / sem encerramento", colunas_abertos].copy()
+    chamados_abertos = df.loc[df["Status SLA"] == "Em aberto / Em tratamento", colunas_abertos].copy()
 
     # =========================
     # DASHBOARD
@@ -538,7 +525,7 @@ try:
     k5, k6, k7, k8 = st.columns(4)
     k5.metric("Dentro do SLA", dentro_sla)
     k6.metric("Fora do SLA", fora_sla)
-    k7.metric("Em aberto / sem encerramento", em_aberto)
+    k7.metric("Em aberto / Em tratamento", em_aberto)
     k8.metric("Tratados até 72h", ate_72h)
 
     k9, k10, k11, k12 = st.columns(4)
@@ -549,8 +536,6 @@ try:
 
     st.info(f"Empresa com mais chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
     st.info(f"Qualificação mais solicitada: **{qualificacao_top}** — {qualificacao_top_qtd} chamados.")
-    st.warning(f"Maior ofensor fora do SLA: **{ofensor_sla}** — {ofensor_sla_qtd} chamados fora do SLA.")
-    st.warning(f"Maior ofensor acima de 72h / aberto: **{ofensor_72h}** — {ofensor_72h_qtd} chamados.")
 
     g1, g2 = st.columns(2)
 
@@ -650,7 +635,7 @@ try:
         st.write("Qualificações")
         st.dataframe(resumo_qualificacoes, use_container_width=True)
 
-    with st.expander("Ver os chamados em aberto / sem encerramento"):
+    with st.expander("Ver os chamados em aberto / Em tratamento"):
         st.dataframe(chamados_abertos, use_container_width=True)
 
     st.subheader("Conferência dos totais")
