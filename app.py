@@ -89,7 +89,7 @@ def montar_empresa_analise(row, col_empresa, col_de):
     return empresa
 
 
-def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria):
+def montar_solicitacao_especifica(df, col_tipo, col_item, col_qualificacao, col_categoria):
     if col_tipo and col_item:
         return (
             df[col_tipo].fillna("Não informado").astype(str).str.strip()
@@ -107,14 +107,6 @@ def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
 
 
 def montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao):
-    """
-    Categoria principal = grupo macro da solicitação.
-
-    Preferência:
-    1. Tipo
-    2. Categoria
-    3. Qualificação
-    """
     if col_tipo:
         return df[col_tipo].fillna("Não informado").astype(str).str.strip()
 
@@ -127,7 +119,7 @@ def montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao):
     return pd.Series(["Não informado"] * len(df), index=df.index)
 
 
-def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
+def resumo_top(df, coluna, nome_coluna, filtro=None, top=50):
     base = df.copy()
 
     if filtro is not None:
@@ -146,200 +138,7 @@ def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
     )
 
 
-def gerar_excel_dashboard(
-    indicadores,
-    resumo_empresas,
-    resumo_categoria_principal,
-    resumo_solicitacoes,
-    resumo_sla,
-    resumo_72h,
-    resumo_causa_sla_vencido,
-    resumo_causa_atraso,
-    chamados_abertos,
-):
-    output = io.BytesIO()
-
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        workbook = writer.book
-        worksheet = workbook.add_worksheet("Dashboard")
-        writer.sheets["Dashboard"] = worksheet
-
-        fmt_titulo = workbook.add_format({
-            "bold": True,
-            "font_size": 20,
-            "align": "center",
-            "valign": "vcenter",
-            "font_color": "white",
-            "bg_color": "#1F4E78",
-        })
-
-        fmt_card = workbook.add_format({
-            "bold": True,
-            "font_size": 12,
-            "align": "center",
-            "valign": "vcenter",
-            "border": 1,
-            "bg_color": "#D9EAF7",
-        })
-
-        fmt_card_valor = workbook.add_format({
-            "bold": True,
-            "font_size": 18,
-            "align": "center",
-            "valign": "vcenter",
-            "border": 1,
-            "bg_color": "#F2F2F2",
-        })
-
-        fmt_secao = workbook.add_format({
-            "bold": True,
-            "font_size": 12,
-            "font_color": "white",
-            "bg_color": "#4472C4",
-            "border": 1,
-        })
-
-        fmt_header = workbook.add_format({
-            "bold": True,
-            "bg_color": "#B4C6E7",
-            "border": 1,
-            "align": "center",
-        })
-
-        fmt_cell = workbook.add_format({"border": 1})
-
-        worksheet.set_column("A:A", 3)
-        worksheet.set_column("B:B", 42)
-        worksheet.set_column("C:C", 14)
-        worksheet.set_column("D:D", 20)
-        worksheet.set_column("E:E", 20)
-        worksheet.set_column("F:F", 42)
-        worksheet.set_column("G:G", 14)
-        worksheet.set_column("H:H", 20)
-        worksheet.set_column("I:I", 20)
-        worksheet.set_column("J:J", 20)
-
-        worksheet.merge_range("B2:J3", "DASHBOARD DE CHAMADOS", fmt_titulo)
-
-        cards = [
-            ("Total de chamados", indicadores["total_chamados"]),
-            ("Empresas com chamados", indicadores["total_empresas"]),
-            ("SLA tratado", indicadores["sla_tratado"]),
-            ("Dentro do SLA", indicadores["dentro_sla"]),
-            ("Fora do SLA", indicadores["fora_sla"]),
-            ("Em aberto / Em tratamento", indicadores["em_aberto"]),
-            ("Tratados até 72h", indicadores["ate_72h"]),
-            ("Acima 72h / abertos", indicadores["nao_72h"]),
-        ]
-
-        posicoes = [
-            ("B5", "C5", "B6", "C6"),
-            ("D5", "E5", "D6", "E6"),
-            ("F5", "G5", "F6", "G6"),
-            ("H5", "I5", "H6", "I6"),
-            ("B8", "C8", "B9", "C9"),
-            ("D8", "E8", "D9", "E9"),
-            ("F8", "G8", "F9", "G9"),
-            ("H8", "I8", "H9", "I9"),
-        ]
-
-        for (titulo, valor), pos in zip(cards, posicoes):
-            worksheet.merge_range(f"{pos[0]}:{pos[1]}", titulo, fmt_card)
-            worksheet.merge_range(f"{pos[2]}:{pos[3]}", valor, fmt_card_valor)
-
-        worksheet.merge_range("B11:E11", "Cliente com maior volume de chamados", fmt_secao)
-        worksheet.merge_range("B12:E12", indicadores["empresa_top"], fmt_cell)
-        worksheet.write("F11", "Qtd.", fmt_secao)
-        worksheet.write("F12", indicadores["empresa_top_qtd"], fmt_cell)
-
-        worksheet.merge_range("B14:E14", "Categoria principal com maior volume", fmt_secao)
-        worksheet.merge_range("B15:E15", indicadores["categoria_top"], fmt_cell)
-        worksheet.write("F14", "Qtd.", fmt_secao)
-        worksheet.write("F15", indicadores["categoria_top_qtd"], fmt_cell)
-
-        worksheet.merge_range("G11:J11", "Solicitação específica mais recorrente", fmt_secao)
-        worksheet.merge_range("G12:I12", indicadores["solicitacao_top"], fmt_cell)
-        worksheet.write("J12", indicadores["solicitacao_top_qtd"], fmt_cell)
-
-        worksheet.merge_range("G14:J14", "Principal causa de SLA vencido", fmt_secao)
-        worksheet.merge_range("G15:I15", indicadores["causa_sla_vencido"], fmt_cell)
-        worksheet.write("J15", indicadores["causa_sla_vencido_qtd"], fmt_cell)
-
-        worksheet.merge_range("B17:E17", "Principal causa de atraso operacional", fmt_secao)
-        worksheet.merge_range("B18:D18", indicadores["causa_atraso"], fmt_cell)
-        worksheet.write("E18", indicadores["causa_atraso_qtd"], fmt_cell)
-
-        linha = 21
-        worksheet.merge_range(linha, 1, linha, 3, "Top clientes por volume de chamados", fmt_secao)
-        linha += 1
-        worksheet.write(linha, 1, "Cliente", fmt_header)
-        worksheet.write(linha, 2, "Chamados", fmt_header)
-
-        for _, row in resumo_empresas.head(10).iterrows():
-            linha += 1
-            worksheet.write(linha, 1, str(row["Cliente"]), fmt_cell)
-            worksheet.write(linha, 2, int(row["Chamados"]), fmt_cell)
-
-        linha = 21
-        worksheet.merge_range(linha, 5, linha, 8, "Top categorias principais", fmt_secao)
-        linha += 1
-        worksheet.write(linha, 5, "Categoria principal", fmt_header)
-        worksheet.write(linha, 6, "Chamados", fmt_header)
-
-        for _, row in resumo_categoria_principal.head(10).iterrows():
-            linha += 1
-            worksheet.write(linha, 5, str(row["Categoria Principal"]), fmt_cell)
-            worksheet.write(linha, 6, int(row["Chamados"]), fmt_cell)
-
-        linha_sla = 35
-        worksheet.merge_range(linha_sla, 1, linha_sla, 3, "Resumo SLA", fmt_secao)
-        linha_sla += 1
-        worksheet.write(linha_sla, 1, "Status SLA", fmt_header)
-        worksheet.write(linha_sla, 2, "Chamados", fmt_header)
-
-        for _, row in resumo_sla.iterrows():
-            linha_sla += 1
-            worksheet.write(linha_sla, 1, str(row["Status SLA"]), fmt_cell)
-            worksheet.write(linha_sla, 2, int(row["Chamados"]), fmt_cell)
-
-        linha_72 = 35
-        worksheet.merge_range(linha_72, 5, linha_72, 8, "Resumo tratamento em 72 horas", fmt_secao)
-        linha_72 += 1
-        worksheet.write(linha_72, 5, "Status 72h", fmt_header)
-        worksheet.write(linha_72, 6, "Chamados", fmt_header)
-
-        for _, row in resumo_72h.iterrows():
-            linha_72 += 1
-            worksheet.write(linha_72, 5, str(row["Status 72h"]), fmt_cell)
-            worksheet.write(linha_72, 6, int(row["Chamados"]), fmt_cell)
-
-        resumo_empresas.to_excel(writer, sheet_name="Clientes", index=False)
-        resumo_categoria_principal.to_excel(writer, sheet_name="Categorias_Principais", index=False)
-        resumo_solicitacoes.to_excel(writer, sheet_name="Solicitacoes", index=False)
-        resumo_sla.to_excel(writer, sheet_name="SLA", index=False)
-        resumo_72h.to_excel(writer, sheet_name="72h", index=False)
-        resumo_causa_sla_vencido.to_excel(writer, sheet_name="Causa_SLA_Vencido", index=False)
-        resumo_causa_atraso.to_excel(writer, sheet_name="Causa_Atraso", index=False)
-        chamados_abertos.to_excel(writer, sheet_name="Abertos_Em_tratamento", index=False)
-
-    output.seek(0)
-    return output
-
-
-# =========================
-# INTERFACE
-# =========================
-
-st.title("📊 Dashboard de Chamados")
-st.write("Envie a planilha do mês para gerar o dashboard atualizado automaticamente.")
-
-arquivo = st.file_uploader("Faça upload da planilha", type=["xls", "xlsx", "xlsm", "csv"])
-
-if arquivo is None:
-    st.warning("Envie uma planilha para começar.")
-    st.stop()
-
-try:
+def processar_base(arquivo, nome_base):
     df = ler_arquivo(arquivo)
 
     col_empresa = encontrar_coluna(df, ["Empresa", "Cliente", "Nome Fantasia", "Razão Social", "Razao Social"])
@@ -365,12 +164,10 @@ try:
     faltando = [nome for nome, coluna in colunas_obrigatorias.items() if coluna is None]
 
     if faltando:
-        st.error("Não consegui identificar automaticamente algumas colunas obrigatórias.")
-        st.write("Colunas faltando:", faltando)
-        st.write("Colunas encontradas na planilha:", list(df.columns))
-        st.stop()
-
-    st.success("Arquivo carregado com sucesso!")
+        raise ValueError(
+            f"Na base {nome_base}, não consegui identificar estas colunas: {faltando}. "
+            f"Colunas encontradas: {list(df.columns)}"
+        )
 
     df = preparar_datas(df, col_abertura)
     df = preparar_datas(df, col_encerramento)
@@ -381,7 +178,7 @@ try:
     df["Categoria Principal"] = montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao)
     df["Categoria Principal"] = df["Categoria Principal"].fillna("Não informado").astype(str).str.strip()
 
-    df["Solicitação Específica"] = montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
+    df["Solicitação Específica"] = montar_solicitacao_especifica(df, col_tipo, col_item, col_qualificacao, col_categoria)
     df["Solicitação Específica"] = df["Solicitação Específica"].fillna("Não informado").astype(str).str.strip()
 
     total_chamados = len(df)
@@ -434,9 +231,8 @@ try:
     acima_72h = int((df["Status 72h"] == "Tratado acima de 72h").sum())
     nao_72h = int((df["Status 72h"] != "Tratado até 72h").sum())
 
-    # Resumos
-    resumo_empresas = resumo_top(df, "Cliente Análise", "Cliente", top=50)
-    resumo_categoria_principal = resumo_top(df, "Categoria Principal", "Categoria Principal", top=50)
+    resumo_clientes = resumo_top(df, "Cliente Análise", "Cliente", top=50)
+    resumo_categorias = resumo_top(df, "Categoria Principal", "Categoria Principal", top=50)
     resumo_solicitacoes = resumo_top(df, "Solicitação Específica", "Solicitação Específica", top=50)
 
     resumo_sla = df.groupby("Status SLA").size().reset_index(name="Chamados")
@@ -458,11 +254,11 @@ try:
         top=10,
     )
 
-    empresa_top = resumo_empresas.iloc[0]["Cliente"] if not resumo_empresas.empty else "-"
-    empresa_top_qtd = int(resumo_empresas.iloc[0]["Chamados"]) if not resumo_empresas.empty else 0
+    cliente_top = resumo_clientes.iloc[0]["Cliente"] if not resumo_clientes.empty else "-"
+    cliente_top_qtd = int(resumo_clientes.iloc[0]["Chamados"]) if not resumo_clientes.empty else 0
 
-    categoria_top = resumo_categoria_principal.iloc[0]["Categoria Principal"] if not resumo_categoria_principal.empty else "-"
-    categoria_top_qtd = int(resumo_categoria_principal.iloc[0]["Chamados"]) if not resumo_categoria_principal.empty else 0
+    categoria_top = resumo_categorias.iloc[0]["Categoria Principal"] if not resumo_categorias.empty else "-"
+    categoria_top_qtd = int(resumo_categorias.iloc[0]["Chamados"]) if not resumo_categorias.empty else 0
 
     solicitacao_top = resumo_solicitacoes.iloc[0]["Solicitação Específica"] if not resumo_solicitacoes.empty else "-"
     solicitacao_top_qtd = int(resumo_solicitacoes.iloc[0]["Chamados"]) if not resumo_solicitacoes.empty else 0
@@ -484,8 +280,8 @@ try:
         "ate_72h": ate_72h,
         "acima_72h": acima_72h,
         "nao_72h": nao_72h,
-        "empresa_top": empresa_top,
-        "empresa_top_qtd": empresa_top_qtd,
+        "cliente_top": cliente_top,
+        "cliente_top_qtd": cliente_top_qtd,
         "categoria_top": categoria_top,
         "categoria_top_qtd": categoria_top_qtd,
         "solicitacao_top": solicitacao_top,
@@ -496,7 +292,6 @@ try:
         "causa_atraso_qtd": causa_atraso_qtd,
     }
 
-    # Tabela dos chamados em aberto / em tratamento
     colunas_abertos = []
 
     for c in [
@@ -517,9 +312,98 @@ try:
 
     chamados_abertos = df.loc[df["Status SLA"] == "Em aberto / Em tratamento", colunas_abertos].copy()
 
-    # =========================
-    # DASHBOARD
-    # =========================
+    return {
+        "nome_base": nome_base,
+        "df": df,
+        "indicadores": indicadores,
+        "resumo_clientes": resumo_clientes,
+        "resumo_categorias": resumo_categorias,
+        "resumo_solicitacoes": resumo_solicitacoes,
+        "resumo_sla": resumo_sla,
+        "resumo_72h": resumo_72h,
+        "resumo_causa_sla_vencido": resumo_causa_sla_vencido,
+        "resumo_causa_atraso": resumo_causa_atraso,
+        "chamados_abertos": chamados_abertos,
+    }
+
+
+def comparar_resumos(resumo_atual, resumo_anterior, coluna):
+    atual = resumo_atual[[coluna, "Chamados"]].rename(columns={"Chamados": "Mês atual"})
+    anterior = resumo_anterior[[coluna, "Chamados"]].rename(columns={"Chamados": "Mês anterior"})
+
+    comparativo = atual.merge(anterior, on=coluna, how="outer")
+    comparativo["Mês atual"] = comparativo["Mês atual"].fillna(0).astype(int)
+    comparativo["Mês anterior"] = comparativo["Mês anterior"].fillna(0).astype(int)
+    comparativo["Diferença"] = comparativo["Mês atual"] - comparativo["Mês anterior"]
+
+    return comparativo.sort_values("Mês atual", ascending=False)
+
+
+def montar_comparativo_indicadores(atual, anterior):
+    ia = atual["indicadores"]
+    ip = anterior["indicadores"]
+
+    linhas = [
+        ("Total de chamados", ia["total_chamados"], ip["total_chamados"]),
+        ("Empresas com chamados", ia["total_empresas"], ip["total_empresas"]),
+        ("SLA tratado", ia["sla_tratado"], ip["sla_tratado"]),
+        ("Dentro do SLA", ia["dentro_sla"], ip["dentro_sla"]),
+        ("Fora do SLA", ia["fora_sla"], ip["fora_sla"]),
+        ("Em aberto / Em tratamento", ia["em_aberto"], ip["em_aberto"]),
+        ("Tratados até 72h", ia["ate_72h"], ip["ate_72h"]),
+        ("Tratados acima de 72h", ia["acima_72h"], ip["acima_72h"]),
+        ("Acima de 72h / abertos", ia["nao_72h"], ip["nao_72h"]),
+        ("% dentro SLA", ia["percentual_dentro_sla"], ip["percentual_dentro_sla"]),
+    ]
+
+    df_comp = pd.DataFrame(linhas, columns=["Indicador", "Mês atual", "Mês anterior"])
+    df_comp["Diferença"] = df_comp["Mês atual"] - df_comp["Mês anterior"]
+
+    return df_comp
+
+
+def gerar_excel_resultado(atual, anterior=None):
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        indicadores_atual = pd.DataFrame(
+            list(atual["indicadores"].items()),
+            columns=["Indicador", "Valor"]
+        )
+
+        indicadores_atual.to_excel(writer, sheet_name="Resumo_Atual", index=False)
+        atual["resumo_clientes"].to_excel(writer, sheet_name="Clientes_Atual", index=False)
+        atual["resumo_categorias"].to_excel(writer, sheet_name="Categorias_Atual", index=False)
+        atual["resumo_solicitacoes"].to_excel(writer, sheet_name="Solicitacoes_Atual", index=False)
+        atual["resumo_sla"].to_excel(writer, sheet_name="SLA_Atual", index=False)
+        atual["resumo_72h"].to_excel(writer, sheet_name="72h_Atual", index=False)
+        atual["resumo_causa_sla_vencido"].to_excel(writer, sheet_name="Causa_SLA_Atual", index=False)
+        atual["resumo_causa_atraso"].to_excel(writer, sheet_name="Causa_Atraso_Atual", index=False)
+        atual["chamados_abertos"].to_excel(writer, sheet_name="Abertos_Atual", index=False)
+
+        if anterior is not None:
+            indicadores_anterior = pd.DataFrame(
+                list(anterior["indicadores"].items()),
+                columns=["Indicador", "Valor"]
+            )
+
+            comp_indicadores = montar_comparativo_indicadores(atual, anterior)
+            comp_clientes = comparar_resumos(atual["resumo_clientes"], anterior["resumo_clientes"], "Cliente")
+            comp_categorias = comparar_resumos(atual["resumo_categorias"], anterior["resumo_categorias"], "Categoria Principal")
+            comp_solicitacoes = comparar_resumos(atual["resumo_solicitacoes"], anterior["resumo_solicitacoes"], "Solicitação Específica")
+
+            indicadores_anterior.to_excel(writer, sheet_name="Resumo_Anterior", index=False)
+            comp_indicadores.to_excel(writer, sheet_name="Comparativo_Geral", index=False)
+            comp_clientes.to_excel(writer, sheet_name="Comp_Clientes", index=False)
+            comp_categorias.to_excel(writer, sheet_name="Comp_Categorias", index=False)
+            comp_solicitacoes.to_excel(writer, sheet_name="Comp_Solicitacoes", index=False)
+
+    output.seek(0)
+    return output
+
+
+def render_dashboard(resultado):
+    indicadores = resultado["indicadores"]
 
     st.subheader("Dashboard atualizado")
 
@@ -539,33 +423,33 @@ try:
         """)
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total de chamados", total_chamados)
-    k2.metric("Empresas com chamados", total_empresas)
-    k3.metric("SLA tratado", sla_tratado)
-    k4.metric("% dentro SLA", f"{percentual_dentro_sla:.1f}%")
+    k1.metric("Total de chamados", indicadores["total_chamados"])
+    k2.metric("Empresas com chamados", indicadores["total_empresas"])
+    k3.metric("SLA tratado", indicadores["sla_tratado"])
+    k4.metric("% dentro SLA", f"{indicadores['percentual_dentro_sla']:.1f}%")
 
     k5, k6, k7, k8 = st.columns(4)
-    k5.metric("Dentro do SLA", dentro_sla)
-    k6.metric("Fora do SLA", fora_sla)
-    k7.metric("Em aberto / Em tratamento", em_aberto)
-    k8.metric("Tratados até 72h", ate_72h)
+    k5.metric("Dentro do SLA", indicadores["dentro_sla"])
+    k6.metric("Fora do SLA", indicadores["fora_sla"])
+    k7.metric("Em aberto / Em tratamento", indicadores["em_aberto"])
+    k8.metric("Tratados até 72h", indicadores["ate_72h"])
 
     k9, k10, k11, k12 = st.columns(4)
-    k9.metric("Tratados acima de 72h", acima_72h)
-    k10.metric("Acima de 72h / abertos", nao_72h)
-    k11.metric("Causa de SLA vencido", causa_sla_vencido_qtd)
-    k12.metric("Causa de atraso", causa_atraso_qtd)
+    k9.metric("Tratados acima de 72h", indicadores["acima_72h"])
+    k10.metric("Acima de 72h / abertos", indicadores["nao_72h"])
+    k11.metric("Causa de SLA vencido", indicadores["causa_sla_vencido_qtd"])
+    k12.metric("Causa de atraso", indicadores["causa_atraso_qtd"])
 
-    st.info(f"Cliente com maior volume de chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
-    st.info(f"Categoria principal com maior volume: **{categoria_top}** — {categoria_top_qtd} chamados.")
-    st.info(f"Solicitação específica mais recorrente: **{solicitacao_top}** — {solicitacao_top_qtd} chamados.")
+    st.info(f"Cliente com maior volume de chamados: **{indicadores['cliente_top']}** — {indicadores['cliente_top_qtd']} chamados.")
+    st.info(f"Categoria principal com maior volume: **{indicadores['categoria_top']}** — {indicadores['categoria_top_qtd']} chamados.")
+    st.info(f"Solicitação específica mais recorrente: **{indicadores['solicitacao_top']}** — {indicadores['solicitacao_top_qtd']} chamados.")
 
     g1, g2 = st.columns(2)
 
     with g1:
         st.write("### Tratamento em 72 horas")
         fig_72h = px.pie(
-            resumo_72h,
+            resultado["resumo_72h"],
             names="Status 72h",
             values="Chamados",
             hole=0.35,
@@ -576,7 +460,7 @@ try:
     with g2:
         st.write("### SLA")
         fig_sla = px.bar(
-            resumo_sla,
+            resultado["resumo_sla"],
             x="Status SLA",
             y="Chamados",
             text="Chamados",
@@ -588,21 +472,21 @@ try:
 
     with g3:
         st.write("### Clientes por volume de chamados")
-        fig_empresas = px.bar(
-            resumo_empresas.head(10),
+        fig_clientes = px.bar(
+            resultado["resumo_clientes"].head(10),
             x="Chamados",
             y="Cliente",
             orientation="h",
             text="Chamados",
             title="Clientes com mais chamados",
         )
-        fig_empresas.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_empresas, use_container_width=True)
+        fig_clientes.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_clientes, use_container_width=True)
 
     with g4:
         st.write("### Categorias principais por volume")
         fig_categoria = px.bar(
-            resumo_categoria_principal.head(10),
+            resultado["resumo_categorias"].head(10),
             x="Chamados",
             y="Categoria Principal",
             orientation="h",
@@ -617,7 +501,7 @@ try:
     with g5:
         st.write("### Solicitações específicas recorrentes")
         fig_solicitacoes = px.bar(
-            resumo_solicitacoes.head(10),
+            resultado["resumo_solicitacoes"].head(10),
             x="Chamados",
             y="Solicitação Específica",
             orientation="h",
@@ -629,11 +513,11 @@ try:
 
     with g6:
         st.write("### Causas de SLA vencido")
-        if resumo_causa_sla_vencido.empty:
+        if resultado["resumo_causa_sla_vencido"].empty:
             st.info("Nenhum chamado fora do SLA.")
         else:
             fig_causa_sla = px.bar(
-                resumo_causa_sla_vencido,
+                resultado["resumo_causa_sla_vencido"],
                 x="Chamados",
                 y="Causa de SLA vencido",
                 orientation="h",
@@ -644,11 +528,11 @@ try:
             st.plotly_chart(fig_causa_sla, use_container_width=True)
 
     st.write("### Causas de atraso operacional")
-    if resumo_causa_atraso.empty:
+    if resultado["resumo_causa_atraso"].empty:
         st.info("Nenhum chamado acima de 72h ou aberto.")
     else:
         fig_causa_atraso = px.bar(
-            resumo_causa_atraso,
+            resultado["resumo_causa_atraso"],
             x="Chamados",
             y="Causa de atraso operacional",
             orientation="h",
@@ -664,22 +548,23 @@ try:
 
     with t1:
         st.write("Clientes")
-        st.dataframe(resumo_empresas, use_container_width=True)
+        st.dataframe(resultado["resumo_clientes"], use_container_width=True)
 
     with t2:
         st.write("Categorias principais")
-        st.dataframe(resumo_categoria_principal, use_container_width=True)
+        st.dataframe(resultado["resumo_categorias"], use_container_width=True)
 
     st.write("Solicitações específicas")
-    st.dataframe(resumo_solicitacoes, use_container_width=True)
+    st.dataframe(resultado["resumo_solicitacoes"], use_container_width=True)
 
     with st.expander("Ver os chamados em aberto / Em tratamento"):
-        st.dataframe(chamados_abertos, use_container_width=True)
+        st.dataframe(resultado["chamados_abertos"], use_container_width=True)
 
     st.subheader("Conferência dos totais")
 
-    total_resumo_72h = int(resumo_72h["Chamados"].sum())
-    total_resumo_sla = int(resumo_sla["Chamados"].sum())
+    total_resumo_72h = int(resultado["resumo_72h"]["Chamados"].sum())
+    total_resumo_sla = int(resultado["resumo_sla"]["Chamados"].sum())
+    total_chamados = indicadores["total_chamados"]
 
     if total_resumo_72h == total_chamados:
         st.success(f"Resumo 72h está batendo: {total_resumo_72h} chamados.")
@@ -691,24 +576,211 @@ try:
     else:
         st.error(f"Resumo SLA não está batendo. Base: {total_chamados} | Resumo: {total_resumo_sla}")
 
-    excel_dashboard = gerar_excel_dashboard(
-        indicadores,
-        resumo_empresas,
-        resumo_categoria_principal,
-        resumo_solicitacoes,
-        resumo_sla,
-        resumo_72h,
-        resumo_causa_sla_vencido,
-        resumo_causa_atraso,
-        chamados_abertos,
+
+def render_comparativo(atual, anterior):
+    st.subheader("Comparação entre mês atual e mês anterior")
+
+    ia = atual["indicadores"]
+    ip = anterior["indicadores"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Chamados no mês atual", ia["total_chamados"], delta=ia["total_chamados"] - ip["total_chamados"])
+    c2.metric("Dentro SLA atual", ia["dentro_sla"], delta=ia["dentro_sla"] - ip["dentro_sla"])
+    c3.metric("Fora SLA atual", ia["fora_sla"], delta=ia["fora_sla"] - ip["fora_sla"])
+    c4.metric("% SLA atual", f"{ia['percentual_dentro_sla']:.1f}%", delta=f"{ia['percentual_dentro_sla'] - ip['percentual_dentro_sla']:.1f} p.p.")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Até 72h atual", ia["ate_72h"], delta=ia["ate_72h"] - ip["ate_72h"])
+    c6.metric("Acima 72h atual", ia["acima_72h"], delta=ia["acima_72h"] - ip["acima_72h"])
+    c7.metric("Em aberto atual", ia["em_aberto"], delta=ia["em_aberto"] - ip["em_aberto"])
+    c8.metric("Empresas atual", ia["total_empresas"], delta=ia["total_empresas"] - ip["total_empresas"])
+
+    comp_indicadores = montar_comparativo_indicadores(atual, anterior)
+
+    st.write("### Comparativo geral")
+    st.dataframe(comp_indicadores, use_container_width=True)
+
+    comp_grafico = comp_indicadores[
+        comp_indicadores["Indicador"].isin([
+            "Total de chamados",
+            "Dentro do SLA",
+            "Fora do SLA",
+            "Em aberto / Em tratamento",
+            "Tratados até 72h",
+            "Tratados acima de 72h",
+        ])
+    ]
+
+    comp_grafico_melt = comp_grafico.melt(
+        id_vars="Indicador",
+        value_vars=["Mês atual", "Mês anterior"],
+        var_name="Mês",
+        value_name="Chamados",
     )
 
-    st.download_button(
-        label="📥 Baixar dashboard em Excel",
-        data=excel_dashboard,
-        file_name="dashboard_chamados_atualizado.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    fig_comp = px.bar(
+        comp_grafico_melt,
+        x="Indicador",
+        y="Chamados",
+        color="Mês",
+        barmode="group",
+        text="Chamados",
+        title="Comparação geral entre os meses",
     )
+    st.plotly_chart(fig_comp, use_container_width=True)
+
+    comp_clientes = comparar_resumos(atual["resumo_clientes"], anterior["resumo_clientes"], "Cliente")
+    comp_categorias = comparar_resumos(atual["resumo_categorias"], anterior["resumo_categorias"], "Categoria Principal")
+    comp_solicitacoes = comparar_resumos(atual["resumo_solicitacoes"], anterior["resumo_solicitacoes"], "Solicitação Específica")
+
+    maior_crescimento_categoria = comp_categorias.sort_values("Diferença", ascending=False).head(1)
+    maior_reducao_categoria = comp_categorias.sort_values("Diferença", ascending=True).head(1)
+
+    if not maior_crescimento_categoria.empty:
+        linha = maior_crescimento_categoria.iloc[0]
+        if linha["Diferença"] > 0:
+            st.info(
+                f"Categoria que mais cresceu: **{linha['Categoria Principal']}** "
+                f"subiu de {linha['Mês anterior']} para {linha['Mês atual']} chamados "
+                f"(**+{linha['Diferença']}**)."
+            )
+
+    if not maior_reducao_categoria.empty:
+        linha = maior_reducao_categoria.iloc[0]
+        if linha["Diferença"] < 0:
+            st.success(
+                f"Categoria que mais reduziu: **{linha['Categoria Principal']}** "
+                f"caiu de {linha['Mês anterior']} para {linha['Mês atual']} chamados "
+                f"(**{linha['Diferença']}**)."
+            )
+
+    st.write("### Comparação por categoria principal")
+
+    top_categorias = comp_categorias.sort_values("Mês atual", ascending=False).head(10)
+    top_categorias_melt = top_categorias.melt(
+        id_vars="Categoria Principal",
+        value_vars=["Mês atual", "Mês anterior"],
+        var_name="Mês",
+        value_name="Chamados",
+    )
+
+    fig_cat = px.bar(
+        top_categorias_melt,
+        x="Chamados",
+        y="Categoria Principal",
+        color="Mês",
+        orientation="h",
+        barmode="group",
+        text="Chamados",
+        title="Categorias principais: mês atual x mês anterior",
+    )
+    fig_cat.update_layout(yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig_cat, use_container_width=True)
+
+    st.write("### Comparação por cliente")
+
+    top_clientes = comp_clientes.sort_values("Mês atual", ascending=False).head(10)
+    top_clientes_melt = top_clientes.melt(
+        id_vars="Cliente",
+        value_vars=["Mês atual", "Mês anterior"],
+        var_name="Mês",
+        value_name="Chamados",
+    )
+
+    fig_cli = px.bar(
+        top_clientes_melt,
+        x="Chamados",
+        y="Cliente",
+        color="Mês",
+        orientation="h",
+        barmode="group",
+        text="Chamados",
+        title="Clientes: mês atual x mês anterior",
+    )
+    fig_cli.update_layout(yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig_cli, use_container_width=True)
+
+    st.write("### Tabelas comparativas")
+
+    t1, t2 = st.columns(2)
+
+    with t1:
+        st.write("Categorias principais")
+        st.dataframe(comp_categorias, use_container_width=True)
+
+    with t2:
+        st.write("Clientes")
+        st.dataframe(comp_clientes, use_container_width=True)
+
+    st.write("Solicitações específicas")
+    st.dataframe(comp_solicitacoes, use_container_width=True)
+
+
+# =========================
+# APP
+# =========================
+
+st.title("📊 Dashboard de Chamados")
+st.write("Envie a planilha do mês atual para gerar o dashboard. Na aba de comparação, envie também a planilha do mês anterior.")
+
+arquivo_atual = st.file_uploader(
+    "Faça upload da planilha do mês atual",
+    type=["xls", "xlsx", "xlsm", "csv"],
+    key="arquivo_atual",
+)
+
+if arquivo_atual is None:
+    st.warning("Envie a planilha do mês atual para começar.")
+    st.stop()
+
+try:
+    resultado_atual = processar_base(arquivo_atual, "Mês atual")
+    st.success("Planilha do mês atual carregada com sucesso!")
+
+    aba_dashboard, aba_comparativo = st.tabs([
+        "Dashboard mês atual",
+        "Comparação com mês anterior",
+    ])
+
+    with aba_dashboard:
+        render_dashboard(resultado_atual)
+
+        excel_atual = gerar_excel_resultado(resultado_atual)
+
+        st.download_button(
+            label="📥 Baixar dashboard do mês atual em Excel",
+            data=excel_atual,
+            file_name="dashboard_chamados_mes_atual.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_atual",
+        )
+
+    with aba_comparativo:
+        st.write("Envie a planilha do mês anterior para comparar com o mês atual.")
+
+        arquivo_anterior = st.file_uploader(
+            "Faça upload da planilha do mês anterior",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            key="arquivo_anterior",
+        )
+
+        if arquivo_anterior is None:
+            st.info("Quando você enviar a planilha do mês anterior, a comparação aparecerá aqui.")
+        else:
+            resultado_anterior = processar_base(arquivo_anterior, "Mês anterior")
+            st.success("Planilha do mês anterior carregada com sucesso!")
+
+            render_comparativo(resultado_atual, resultado_anterior)
+
+            excel_comparativo = gerar_excel_resultado(resultado_atual, resultado_anterior)
+
+            st.download_button(
+                label="📥 Baixar Excel com dashboard e comparativo",
+                data=excel_comparativo,
+                file_name="dashboard_chamados_comparativo.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_comparativo",
+            )
 
 except Exception as e:
     st.error("Erro ao processar a planilha.")
