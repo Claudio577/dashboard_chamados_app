@@ -103,7 +103,28 @@ def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
     if col_categoria:
         return df[col_categoria].fillna("Não informado").astype(str).str.strip()
 
-    return "Não informado"
+    return pd.Series(["Não informado"] * len(df))
+
+
+def montar_dor_geral(df, col_tipo, col_categoria, col_qualificacao):
+    """
+    Maior dor geral = grupo principal da solicitação.
+
+    Preferência:
+    1. Tipo
+    2. Categoria
+    3. Qualificação
+    """
+    if col_tipo:
+        return df[col_tipo].fillna("Não informado").astype(str).str.strip()
+
+    if col_categoria:
+        return df[col_categoria].fillna("Não informado").astype(str).str.strip()
+
+    if col_qualificacao:
+        return df[col_qualificacao].fillna("Não informado").astype(str).str.strip()
+
+    return pd.Series(["Não informado"] * len(df))
 
 
 def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
@@ -128,6 +149,7 @@ def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
 def gerar_excel_dashboard(
     indicadores,
     resumo_empresas,
+    resumo_dor_geral,
     resumo_qualificacoes,
     resumo_sla,
     resumo_72h,
@@ -187,11 +209,11 @@ def gerar_excel_dashboard(
         fmt_cell = workbook.add_format({"border": 1})
 
         worksheet.set_column("A:A", 3)
-        worksheet.set_column("B:B", 36)
+        worksheet.set_column("B:B", 38)
         worksheet.set_column("C:C", 14)
         worksheet.set_column("D:D", 20)
         worksheet.set_column("E:E", 20)
-        worksheet.set_column("F:F", 36)
+        worksheet.set_column("F:F", 38)
         worksheet.set_column("G:G", 14)
         worksheet.set_column("H:H", 20)
         worksheet.set_column("I:I", 20)
@@ -223,27 +245,31 @@ def gerar_excel_dashboard(
 
         for (titulo, valor), pos in zip(cards, posicoes):
             worksheet.merge_range(f"{pos[0]}:{pos[1]}", titulo, fmt_card)
-            worksheet.merge_range(f"{pos[2]}:{pos[3]}", valor, fmt_card_valor)
+            worksheet.merge_range(f"{pos[2]}}:{pos[3]}", valor, fmt_card_valor)
 
         worksheet.merge_range("B11:E11", "Empresa com mais chamados", fmt_secao)
         worksheet.merge_range("B12:E12", indicadores["empresa_top"], fmt_cell)
         worksheet.write("F11", "Qtd.", fmt_secao)
         worksheet.write("F12", indicadores["empresa_top_qtd"], fmt_cell)
 
-        worksheet.merge_range("B14:E14", "Qualificação mais solicitada", fmt_secao)
-        worksheet.merge_range("B15:E15", indicadores["qualificacao_top"], fmt_cell)
+        worksheet.merge_range("B14:E14", "Maior dor geral", fmt_secao)
+        worksheet.merge_range("B15:E15", indicadores["dor_geral_top"], fmt_cell)
         worksheet.write("F14", "Qtd.", fmt_secao)
-        worksheet.write("F15", indicadores["qualificacao_top_qtd"], fmt_cell)
+        worksheet.write("F15", indicadores["dor_geral_top_qtd"], fmt_cell)
 
-        worksheet.merge_range("G11:J11", "Maior ofensor fora do SLA", fmt_secao)
-        worksheet.merge_range("G12:I12", indicadores["ofensor_sla"], fmt_cell)
-        worksheet.write("J12", indicadores["ofensor_sla_qtd"], fmt_cell)
+        worksheet.merge_range("G11:J11", "Qualificação mais solicitada", fmt_secao)
+        worksheet.merge_range("G12:I12", indicadores["qualificacao_top"], fmt_cell)
+        worksheet.write("J12", indicadores["qualificacao_top_qtd"], fmt_cell)
 
-        worksheet.merge_range("G14:J14", "Maior ofensor acima de 72h / aberto", fmt_secao)
-        worksheet.merge_range("G15:I15", indicadores["ofensor_72h"], fmt_cell)
-        worksheet.write("J15", indicadores["ofensor_72h_qtd"], fmt_cell)
+        worksheet.merge_range("G14:J14", "Maior ofensor fora do SLA", fmt_secao)
+        worksheet.merge_range("G15:I15", indicadores["ofensor_sla"], fmt_cell)
+        worksheet.write("J15", indicadores["ofensor_sla_qtd"], fmt_cell)
 
-        linha = 18
+        worksheet.merge_range("B17:E17", "Maior ofensor acima de 72h / aberto", fmt_secao)
+        worksheet.merge_range("B18:D18", indicadores["ofensor_72h"], fmt_cell)
+        worksheet.write("E18", indicadores["ofensor_72h_qtd"], fmt_cell)
+
+        linha = 21
         worksheet.merge_range(linha, 1, linha, 3, "Top empresas por chamados", fmt_secao)
         linha += 1
         worksheet.write(linha, 1, "Empresa", fmt_header)
@@ -254,18 +280,18 @@ def gerar_excel_dashboard(
             worksheet.write(linha, 1, str(row["Empresa"]), fmt_cell)
             worksheet.write(linha, 2, int(row["Chamados"]), fmt_cell)
 
-        linha = 18
-        worksheet.merge_range(linha, 5, linha, 8, "Top qualificações solicitadas", fmt_secao)
+        linha = 21
+        worksheet.merge_range(linha, 5, linha, 8, "Top maiores dores gerais", fmt_secao)
         linha += 1
-        worksheet.write(linha, 5, "Qualificação", fmt_header)
+        worksheet.write(linha, 5, "Dor geral", fmt_header)
         worksheet.write(linha, 6, "Chamados", fmt_header)
 
-        for _, row in resumo_qualificacoes.head(10).iterrows():
+        for _, row in resumo_dor_geral.head(10).iterrows():
             linha += 1
-            worksheet.write(linha, 5, str(row["Qualificação"]), fmt_cell)
+            worksheet.write(linha, 5, str(row["Dor Geral"]), fmt_cell)
             worksheet.write(linha, 6, int(row["Chamados"]), fmt_cell)
 
-        linha_sla = 32
+        linha_sla = 35
         worksheet.merge_range(linha_sla, 1, linha_sla, 3, "Resumo SLA", fmt_secao)
         linha_sla += 1
         worksheet.write(linha_sla, 1, "Status SLA", fmt_header)
@@ -276,7 +302,7 @@ def gerar_excel_dashboard(
             worksheet.write(linha_sla, 1, str(row["Status SLA"]), fmt_cell)
             worksheet.write(linha_sla, 2, int(row["Chamados"]), fmt_cell)
 
-        linha_72 = 32
+        linha_72 = 35
         worksheet.merge_range(linha_72, 5, linha_72, 8, "Resumo tratamento em 72 horas", fmt_secao)
         linha_72 += 1
         worksheet.write(linha_72, 5, "Status 72h", fmt_header)
@@ -287,37 +313,8 @@ def gerar_excel_dashboard(
             worksheet.write(linha_72, 5, str(row["Status 72h"]), fmt_cell)
             worksheet.write(linha_72, 6, int(row["Chamados"]), fmt_cell)
 
-        chart_72h = workbook.add_chart({"type": "pie"})
-        chart_72h.add_series({
-            "name": "Tratamento em 72 horas",
-            "categories": ["Dashboard", 34, 5, 36, 5],
-            "values": ["Dashboard", 34, 6, 36, 6],
-            "data_labels": {"percentage": True, "category": True},
-        })
-        chart_72h.set_title({"name": "Tratamento em 72 horas"})
-        worksheet.insert_chart("H32", chart_72h, {"x_scale": 1.15, "y_scale": 1.15})
-
-        chart_empresas = workbook.add_chart({"type": "bar"})
-        chart_empresas.add_series({
-            "name": "Chamados",
-            "categories": ["Dashboard", 20, 1, 29, 1],
-            "values": ["Dashboard", 20, 2, 29, 2],
-            "data_labels": {"value": True},
-        })
-        chart_empresas.set_title({"name": "Top empresas por chamados"})
-        worksheet.insert_chart("B39", chart_empresas, {"x_scale": 1.5, "y_scale": 1.45})
-
-        chart_qual = workbook.add_chart({"type": "bar"})
-        chart_qual.add_series({
-            "name": "Chamados",
-            "categories": ["Dashboard", 20, 5, 29, 5],
-            "values": ["Dashboard", 20, 6, 29, 6],
-            "data_labels": {"value": True},
-        })
-        chart_qual.set_title({"name": "Top qualificações solicitadas"})
-        worksheet.insert_chart("G39", chart_qual, {"x_scale": 1.5, "y_scale": 1.45})
-
         resumo_empresas.to_excel(writer, sheet_name="Empresas", index=False)
+        resumo_dor_geral.to_excel(writer, sheet_name="Dor_Geral", index=False)
         resumo_qualificacoes.to_excel(writer, sheet_name="Qualificações", index=False)
         resumo_sla.to_excel(writer, sheet_name="SLA", index=False)
         resumo_72h.to_excel(writer, sheet_name="72h", index=False)
@@ -380,6 +377,10 @@ try:
     df = preparar_datas(df, col_vencimento)
 
     df["Empresa Análise"] = df.apply(lambda row: montar_empresa_analise(row, col_empresa, col_de), axis=1)
+
+    df["Dor Geral"] = montar_dor_geral(df, col_tipo, col_categoria, col_qualificacao)
+    df["Dor Geral"] = df["Dor Geral"].fillna("Não informado").astype(str).str.strip()
+
     df["Qualificação Análise"] = montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
     df["Qualificação Análise"] = df["Qualificação Análise"].fillna("Não informado").astype(str).str.strip()
 
@@ -433,8 +434,9 @@ try:
     acima_72h = int((df["Status 72h"] == "Tratado acima de 72h").sum())
     nao_72h = int((df["Status 72h"] != "Tratado até 72h").sum())
 
-    # Resumos principais
+    # Resumos
     resumo_empresas = resumo_top(df, "Empresa Análise", "Empresa", top=50)
+    resumo_dor_geral = resumo_top(df, "Dor Geral", "Dor Geral", top=50)
     resumo_qualificacoes = resumo_top(df, "Qualificação Análise", "Qualificação", top=50)
 
     resumo_sla = df.groupby("Status SLA").size().reset_index(name="Chamados")
@@ -459,6 +461,9 @@ try:
     empresa_top = resumo_empresas.iloc[0]["Empresa"] if not resumo_empresas.empty else "-"
     empresa_top_qtd = int(resumo_empresas.iloc[0]["Chamados"]) if not resumo_empresas.empty else 0
 
+    dor_geral_top = resumo_dor_geral.iloc[0]["Dor Geral"] if not resumo_dor_geral.empty else "-"
+    dor_geral_top_qtd = int(resumo_dor_geral.iloc[0]["Chamados"]) if not resumo_dor_geral.empty else 0
+
     qualificacao_top = resumo_qualificacoes.iloc[0]["Qualificação"] if not resumo_qualificacoes.empty else "-"
     qualificacao_top_qtd = int(resumo_qualificacoes.iloc[0]["Chamados"]) if not resumo_qualificacoes.empty else 0
 
@@ -481,6 +486,8 @@ try:
         "nao_72h": nao_72h,
         "empresa_top": empresa_top,
         "empresa_top_qtd": empresa_top_qtd,
+        "dor_geral_top": dor_geral_top,
+        "dor_geral_top_qtd": dor_geral_top_qtd,
         "qualificacao_top": qualificacao_top,
         "qualificacao_top_qtd": qualificacao_top_qtd,
         "ofensor_sla": ofensor_sla,
@@ -535,6 +542,7 @@ try:
     k12.metric("Ofensor 72h / aberto", ofensor_72h_qtd)
 
     st.info(f"Empresa com mais chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
+    st.info(f"Maior dor geral: **{dor_geral_top}** — {dor_geral_top_qtd} chamados.")
     st.info(f"Qualificação mais solicitada: **{qualificacao_top}** — {qualificacao_top_qtd} chamados.")
 
     g1, g2 = st.columns(2)
@@ -577,6 +585,21 @@ try:
         st.plotly_chart(fig_empresas, use_container_width=True)
 
     with g4:
+        st.write("### Maiores dores gerais")
+        fig_dor = px.bar(
+            resumo_dor_geral.head(10),
+            x="Chamados",
+            y="Dor Geral",
+            orientation="h",
+            text="Chamados",
+            title="Maiores dores gerais",
+        )
+        fig_dor.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_dor, use_container_width=True)
+
+    g5, g6 = st.columns(2)
+
+    with g5:
         st.write("### Top qualificações")
         fig_qual = px.bar(
             resumo_qualificacoes.head(10),
@@ -589,9 +612,7 @@ try:
         fig_qual.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig_qual, use_container_width=True)
 
-    g5, g6 = st.columns(2)
-
-    with g5:
+    with g6:
         st.write("### Ofensores fora do SLA")
         if resumo_ofensor_sla.empty:
             st.info("Nenhum chamado fora do SLA.")
@@ -607,21 +628,20 @@ try:
             fig_ofensor_sla.update_layout(yaxis={"categoryorder": "total ascending"})
             st.plotly_chart(fig_ofensor_sla, use_container_width=True)
 
-    with g6:
-        st.write("### Ofensores acima de 72h / abertos")
-        if resumo_ofensor_72h.empty:
-            st.info("Nenhum chamado acima de 72h ou aberto.")
-        else:
-            fig_ofensor_72h = px.bar(
-                resumo_ofensor_72h,
-                x="Chamados",
-                y="Ofensor acima de 72h / aberto",
-                orientation="h",
-                text="Chamados",
-                title="Qualificações acima de 72h ou abertas",
-            )
-            fig_ofensor_72h.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig_ofensor_72h, use_container_width=True)
+    st.write("### Ofensores acima de 72h / abertos")
+    if resumo_ofensor_72h.empty:
+        st.info("Nenhum chamado acima de 72h ou aberto.")
+    else:
+        fig_ofensor_72h = px.bar(
+            resumo_ofensor_72h,
+            x="Chamados",
+            y="Ofensor acima de 72h / aberto",
+            orientation="h",
+            text="Chamados",
+            title="Qualificações acima de 72h ou abertas",
+        )
+        fig_ofensor_72h.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_ofensor_72h, use_container_width=True)
 
     st.subheader("Tabelas de conferência")
 
@@ -632,8 +652,11 @@ try:
         st.dataframe(resumo_empresas, use_container_width=True)
 
     with t2:
-        st.write("Qualificações")
-        st.dataframe(resumo_qualificacoes, use_container_width=True)
+        st.write("Maiores dores gerais")
+        st.dataframe(resumo_dor_geral, use_container_width=True)
+
+    st.write("Qualificações")
+    st.dataframe(resumo_qualificacoes, use_container_width=True)
 
     with st.expander("Ver os chamados em aberto / Em tratamento"):
         st.dataframe(chamados_abertos, use_container_width=True)
@@ -656,6 +679,7 @@ try:
     excel_dashboard = gerar_excel_dashboard(
         indicadores,
         resumo_empresas,
+        resumo_dor_geral,
         resumo_qualificacoes,
         resumo_sla,
         resumo_72h,
