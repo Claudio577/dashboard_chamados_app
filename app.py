@@ -106,10 +106,14 @@ def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
     return pd.Series(["Não informado"] * len(df), index=df.index)
 
 
-def montar_dor_geral(df, col_tipo, col_categoria, col_qualificacao):
+def montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao):
     """
-    Maior dor geral = grupo principal da solicitação.
-    Preferência: Tipo > Categoria > Qualificação.
+    Categoria principal = grupo macro da solicitação.
+
+    Preferência:
+    1. Tipo
+    2. Categoria
+    3. Qualificação
     """
     if col_tipo:
         return df[col_tipo].fillna("Não informado").astype(str).str.strip()
@@ -145,12 +149,12 @@ def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
 def gerar_excel_dashboard(
     indicadores,
     resumo_empresas,
-    resumo_dor_geral,
-    resumo_qualificacoes,
+    resumo_categoria_principal,
+    resumo_solicitacoes,
     resumo_sla,
     resumo_72h,
-    resumo_ofensor_sla,
-    resumo_ofensor_72h,
+    resumo_causa_sla_vencido,
+    resumo_causa_atraso,
     chamados_abertos,
 ):
     output = io.BytesIO()
@@ -205,11 +209,11 @@ def gerar_excel_dashboard(
         fmt_cell = workbook.add_format({"border": 1})
 
         worksheet.set_column("A:A", 3)
-        worksheet.set_column("B:B", 38)
+        worksheet.set_column("B:B", 42)
         worksheet.set_column("C:C", 14)
         worksheet.set_column("D:D", 20)
         worksheet.set_column("E:E", 20)
-        worksheet.set_column("F:F", 38)
+        worksheet.set_column("F:F", 42)
         worksheet.set_column("G:G", 14)
         worksheet.set_column("H:H", 20)
         worksheet.set_column("I:I", 20)
@@ -243,48 +247,48 @@ def gerar_excel_dashboard(
             worksheet.merge_range(f"{pos[0]}:{pos[1]}", titulo, fmt_card)
             worksheet.merge_range(f"{pos[2]}:{pos[3]}", valor, fmt_card_valor)
 
-        worksheet.merge_range("B11:E11", "Empresa com mais chamados", fmt_secao)
+        worksheet.merge_range("B11:E11", "Cliente com maior volume de chamados", fmt_secao)
         worksheet.merge_range("B12:E12", indicadores["empresa_top"], fmt_cell)
         worksheet.write("F11", "Qtd.", fmt_secao)
         worksheet.write("F12", indicadores["empresa_top_qtd"], fmt_cell)
 
-        worksheet.merge_range("B14:E14", "Maior dor geral", fmt_secao)
-        worksheet.merge_range("B15:E15", indicadores["dor_geral_top"], fmt_cell)
+        worksheet.merge_range("B14:E14", "Categoria principal com maior volume", fmt_secao)
+        worksheet.merge_range("B15:E15", indicadores["categoria_top"], fmt_cell)
         worksheet.write("F14", "Qtd.", fmt_secao)
-        worksheet.write("F15", indicadores["dor_geral_top_qtd"], fmt_cell)
+        worksheet.write("F15", indicadores["categoria_top_qtd"], fmt_cell)
 
-        worksheet.merge_range("G11:J11", "Qualificação mais solicitada", fmt_secao)
-        worksheet.merge_range("G12:I12", indicadores["qualificacao_top"], fmt_cell)
-        worksheet.write("J12", indicadores["qualificacao_top_qtd"], fmt_cell)
+        worksheet.merge_range("G11:J11", "Solicitação específica mais recorrente", fmt_secao)
+        worksheet.merge_range("G12:I12", indicadores["solicitacao_top"], fmt_cell)
+        worksheet.write("J12", indicadores["solicitacao_top_qtd"], fmt_cell)
 
-        worksheet.merge_range("G14:J14", "Maior ofensor fora do SLA", fmt_secao)
-        worksheet.merge_range("G15:I15", indicadores["ofensor_sla"], fmt_cell)
-        worksheet.write("J15", indicadores["ofensor_sla_qtd"], fmt_cell)
+        worksheet.merge_range("G14:J14", "Principal causa de SLA vencido", fmt_secao)
+        worksheet.merge_range("G15:I15", indicadores["causa_sla_vencido"], fmt_cell)
+        worksheet.write("J15", indicadores["causa_sla_vencido_qtd"], fmt_cell)
 
-        worksheet.merge_range("B17:E17", "Maior ofensor acima de 72h / aberto", fmt_secao)
-        worksheet.merge_range("B18:D18", indicadores["ofensor_72h"], fmt_cell)
-        worksheet.write("E18", indicadores["ofensor_72h_qtd"], fmt_cell)
+        worksheet.merge_range("B17:E17", "Principal causa de atraso operacional", fmt_secao)
+        worksheet.merge_range("B18:D18", indicadores["causa_atraso"], fmt_cell)
+        worksheet.write("E18", indicadores["causa_atraso_qtd"], fmt_cell)
 
         linha = 21
-        worksheet.merge_range(linha, 1, linha, 3, "Top empresas por chamados", fmt_secao)
+        worksheet.merge_range(linha, 1, linha, 3, "Top clientes por volume de chamados", fmt_secao)
         linha += 1
-        worksheet.write(linha, 1, "Empresa", fmt_header)
+        worksheet.write(linha, 1, "Cliente", fmt_header)
         worksheet.write(linha, 2, "Chamados", fmt_header)
 
         for _, row in resumo_empresas.head(10).iterrows():
             linha += 1
-            worksheet.write(linha, 1, str(row["Empresa"]), fmt_cell)
+            worksheet.write(linha, 1, str(row["Cliente"]), fmt_cell)
             worksheet.write(linha, 2, int(row["Chamados"]), fmt_cell)
 
         linha = 21
-        worksheet.merge_range(linha, 5, linha, 8, "Top maiores dores gerais", fmt_secao)
+        worksheet.merge_range(linha, 5, linha, 8, "Top categorias principais", fmt_secao)
         linha += 1
-        worksheet.write(linha, 5, "Dor geral", fmt_header)
+        worksheet.write(linha, 5, "Categoria principal", fmt_header)
         worksheet.write(linha, 6, "Chamados", fmt_header)
 
-        for _, row in resumo_dor_geral.head(10).iterrows():
+        for _, row in resumo_categoria_principal.head(10).iterrows():
             linha += 1
-            worksheet.write(linha, 5, str(row["Dor Geral"]), fmt_cell)
+            worksheet.write(linha, 5, str(row["Categoria Principal"]), fmt_cell)
             worksheet.write(linha, 6, int(row["Chamados"]), fmt_cell)
 
         linha_sla = 35
@@ -309,13 +313,13 @@ def gerar_excel_dashboard(
             worksheet.write(linha_72, 5, str(row["Status 72h"]), fmt_cell)
             worksheet.write(linha_72, 6, int(row["Chamados"]), fmt_cell)
 
-        resumo_empresas.to_excel(writer, sheet_name="Empresas", index=False)
-        resumo_dor_geral.to_excel(writer, sheet_name="Dor_Geral", index=False)
-        resumo_qualificacoes.to_excel(writer, sheet_name="Qualificações", index=False)
+        resumo_empresas.to_excel(writer, sheet_name="Clientes", index=False)
+        resumo_categoria_principal.to_excel(writer, sheet_name="Categorias_Principais", index=False)
+        resumo_solicitacoes.to_excel(writer, sheet_name="Solicitacoes", index=False)
         resumo_sla.to_excel(writer, sheet_name="SLA", index=False)
         resumo_72h.to_excel(writer, sheet_name="72h", index=False)
-        resumo_ofensor_sla.to_excel(writer, sheet_name="Ofensor_SLA", index=False)
-        resumo_ofensor_72h.to_excel(writer, sheet_name="Ofensor_72h", index=False)
+        resumo_causa_sla_vencido.to_excel(writer, sheet_name="Causa_SLA_Vencido", index=False)
+        resumo_causa_atraso.to_excel(writer, sheet_name="Causa_Atraso", index=False)
         chamados_abertos.to_excel(writer, sheet_name="Abertos_Em_tratamento", index=False)
 
     output.seek(0)
@@ -372,16 +376,16 @@ try:
     df = preparar_datas(df, col_encerramento)
     df = preparar_datas(df, col_vencimento)
 
-    df["Empresa Análise"] = df.apply(lambda row: montar_empresa_analise(row, col_empresa, col_de), axis=1)
+    df["Cliente Análise"] = df.apply(lambda row: montar_empresa_analise(row, col_empresa, col_de), axis=1)
 
-    df["Dor Geral"] = montar_dor_geral(df, col_tipo, col_categoria, col_qualificacao)
-    df["Dor Geral"] = df["Dor Geral"].fillna("Não informado").astype(str).str.strip()
+    df["Categoria Principal"] = montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao)
+    df["Categoria Principal"] = df["Categoria Principal"].fillna("Não informado").astype(str).str.strip()
 
-    df["Qualificação Análise"] = montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
-    df["Qualificação Análise"] = df["Qualificação Análise"].fillna("Não informado").astype(str).str.strip()
+    df["Solicitação Específica"] = montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
+    df["Solicitação Específica"] = df["Solicitação Específica"].fillna("Não informado").astype(str).str.strip()
 
     total_chamados = len(df)
-    total_empresas = df["Empresa Análise"].nunique()
+    total_empresas = df["Cliente Análise"].nunique()
 
     # SLA
     df["Status SLA"] = "Em aberto / Em tratamento"
@@ -431,43 +435,43 @@ try:
     nao_72h = int((df["Status 72h"] != "Tratado até 72h").sum())
 
     # Resumos
-    resumo_empresas = resumo_top(df, "Empresa Análise", "Empresa", top=50)
-    resumo_dor_geral = resumo_top(df, "Dor Geral", "Dor Geral", top=50)
-    resumo_qualificacoes = resumo_top(df, "Qualificação Análise", "Qualificação", top=50)
+    resumo_empresas = resumo_top(df, "Cliente Análise", "Cliente", top=50)
+    resumo_categoria_principal = resumo_top(df, "Categoria Principal", "Categoria Principal", top=50)
+    resumo_solicitacoes = resumo_top(df, "Solicitação Específica", "Solicitação Específica", top=50)
 
     resumo_sla = df.groupby("Status SLA").size().reset_index(name="Chamados")
     resumo_72h = df.groupby("Status 72h").size().reset_index(name="Chamados")
 
-    resumo_ofensor_sla = resumo_top(
+    resumo_causa_sla_vencido = resumo_top(
         df,
-        "Qualificação Análise",
-        "Ofensor fora do SLA",
+        "Solicitação Específica",
+        "Causa de SLA vencido",
         filtro=(df["Status SLA"] == "Fora do SLA"),
         top=10,
     )
 
-    resumo_ofensor_72h = resumo_top(
+    resumo_causa_atraso = resumo_top(
         df,
-        "Qualificação Análise",
-        "Ofensor acima de 72h / aberto",
+        "Solicitação Específica",
+        "Causa de atraso operacional",
         filtro=(df["Status 72h"] != "Tratado até 72h"),
         top=10,
     )
 
-    empresa_top = resumo_empresas.iloc[0]["Empresa"] if not resumo_empresas.empty else "-"
+    empresa_top = resumo_empresas.iloc[0]["Cliente"] if not resumo_empresas.empty else "-"
     empresa_top_qtd = int(resumo_empresas.iloc[0]["Chamados"]) if not resumo_empresas.empty else 0
 
-    dor_geral_top = resumo_dor_geral.iloc[0]["Dor Geral"] if not resumo_dor_geral.empty else "-"
-    dor_geral_top_qtd = int(resumo_dor_geral.iloc[0]["Chamados"]) if not resumo_dor_geral.empty else 0
+    categoria_top = resumo_categoria_principal.iloc[0]["Categoria Principal"] if not resumo_categoria_principal.empty else "-"
+    categoria_top_qtd = int(resumo_categoria_principal.iloc[0]["Chamados"]) if not resumo_categoria_principal.empty else 0
 
-    qualificacao_top = resumo_qualificacoes.iloc[0]["Qualificação"] if not resumo_qualificacoes.empty else "-"
-    qualificacao_top_qtd = int(resumo_qualificacoes.iloc[0]["Chamados"]) if not resumo_qualificacoes.empty else 0
+    solicitacao_top = resumo_solicitacoes.iloc[0]["Solicitação Específica"] if not resumo_solicitacoes.empty else "-"
+    solicitacao_top_qtd = int(resumo_solicitacoes.iloc[0]["Chamados"]) if not resumo_solicitacoes.empty else 0
 
-    ofensor_sla = resumo_ofensor_sla.iloc[0]["Ofensor fora do SLA"] if not resumo_ofensor_sla.empty else "-"
-    ofensor_sla_qtd = int(resumo_ofensor_sla.iloc[0]["Chamados"]) if not resumo_ofensor_sla.empty else 0
+    causa_sla_vencido = resumo_causa_sla_vencido.iloc[0]["Causa de SLA vencido"] if not resumo_causa_sla_vencido.empty else "-"
+    causa_sla_vencido_qtd = int(resumo_causa_sla_vencido.iloc[0]["Chamados"]) if not resumo_causa_sla_vencido.empty else 0
 
-    ofensor_72h = resumo_ofensor_72h.iloc[0]["Ofensor acima de 72h / aberto"] if not resumo_ofensor_72h.empty else "-"
-    ofensor_72h_qtd = int(resumo_ofensor_72h.iloc[0]["Chamados"]) if not resumo_ofensor_72h.empty else 0
+    causa_atraso = resumo_causa_atraso.iloc[0]["Causa de atraso operacional"] if not resumo_causa_atraso.empty else "-"
+    causa_atraso_qtd = int(resumo_causa_atraso.iloc[0]["Chamados"]) if not resumo_causa_atraso.empty else 0
 
     indicadores = {
         "total_chamados": total_chamados,
@@ -482,14 +486,14 @@ try:
         "nao_72h": nao_72h,
         "empresa_top": empresa_top,
         "empresa_top_qtd": empresa_top_qtd,
-        "dor_geral_top": dor_geral_top,
-        "dor_geral_top_qtd": dor_geral_top_qtd,
-        "qualificacao_top": qualificacao_top,
-        "qualificacao_top_qtd": qualificacao_top_qtd,
-        "ofensor_sla": ofensor_sla,
-        "ofensor_sla_qtd": ofensor_sla_qtd,
-        "ofensor_72h": ofensor_72h,
-        "ofensor_72h_qtd": ofensor_72h_qtd,
+        "categoria_top": categoria_top,
+        "categoria_top_qtd": categoria_top_qtd,
+        "solicitacao_top": solicitacao_top,
+        "solicitacao_top_qtd": solicitacao_top_qtd,
+        "causa_sla_vencido": causa_sla_vencido,
+        "causa_sla_vencido_qtd": causa_sla_vencido_qtd,
+        "causa_atraso": causa_atraso,
+        "causa_atraso_qtd": causa_atraso_qtd,
     }
 
     # Tabela dos chamados em aberto / em tratamento
@@ -519,6 +523,21 @@ try:
 
     st.subheader("Dashboard atualizado")
 
+    with st.expander("Entenda os indicadores"):
+        st.markdown("""
+        **Cliente com maior volume de chamados:** mostra qual empresa/cliente abriu mais chamados no mês.
+
+        **Categoria principal com maior volume:** mostra o grupo principal que mais gerou chamados. Normalmente vem da coluna **Tipo**. Exemplo: *DeskPhone JRC Computador*.
+
+        **Solicitação específica mais recorrente:** mostra o detalhe mais repetido, juntando **Tipo + Item**. Exemplo: *DeskPhone JRC Computador - Configuração*.
+
+        **Principal causa de SLA vencido:** mostra a solicitação específica que mais ficou fora do prazo de SLA.
+
+        **Principal causa de atraso operacional:** mostra a solicitação específica que mais passou de 72 horas ou ficou em aberto/em tratamento.
+
+        **Em aberto / Em tratamento:** chamados que ainda não possuem data de encerramento na planilha.
+        """)
+
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total de chamados", total_chamados)
     k2.metric("Empresas com chamados", total_empresas)
@@ -534,12 +553,12 @@ try:
     k9, k10, k11, k12 = st.columns(4)
     k9.metric("Tratados acima de 72h", acima_72h)
     k10.metric("Acima de 72h / abertos", nao_72h)
-    k11.metric("Ofensor fora do SLA", ofensor_sla_qtd)
-    k12.metric("Ofensor 72h / aberto", ofensor_72h_qtd)
+    k11.metric("Causa de SLA vencido", causa_sla_vencido_qtd)
+    k12.metric("Causa de atraso", causa_atraso_qtd)
 
-    st.info(f"Empresa com mais chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
-    st.info(f"Maior dor geral: **{dor_geral_top}** — {dor_geral_top_qtd} chamados.")
-    st.info(f"Qualificação mais solicitada: **{qualificacao_top}** — {qualificacao_top_qtd} chamados.")
+    st.info(f"Cliente com maior volume de chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
+    st.info(f"Categoria principal com maior volume: **{categoria_top}** — {categoria_top_qtd} chamados.")
+    st.info(f"Solicitação específica mais recorrente: **{solicitacao_top}** — {solicitacao_top_qtd} chamados.")
 
     g1, g2 = st.columns(2)
 
@@ -568,91 +587,91 @@ try:
     g3, g4 = st.columns(2)
 
     with g3:
-        st.write("### Top empresas por chamados")
+        st.write("### Clientes por volume de chamados")
         fig_empresas = px.bar(
             resumo_empresas.head(10),
             x="Chamados",
-            y="Empresa",
+            y="Cliente",
             orientation="h",
             text="Chamados",
-            title="Top empresas",
+            title="Clientes com mais chamados",
         )
         fig_empresas.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig_empresas, use_container_width=True)
 
     with g4:
-        st.write("### Maiores dores gerais")
-        fig_dor = px.bar(
-            resumo_dor_geral.head(10),
+        st.write("### Categorias principais por volume")
+        fig_categoria = px.bar(
+            resumo_categoria_principal.head(10),
             x="Chamados",
-            y="Dor Geral",
+            y="Categoria Principal",
             orientation="h",
             text="Chamados",
-            title="Maiores dores gerais",
+            title="Categorias principais com mais chamados",
         )
-        fig_dor.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_dor, use_container_width=True)
+        fig_categoria.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_categoria, use_container_width=True)
 
     g5, g6 = st.columns(2)
 
     with g5:
-        st.write("### Top qualificações")
-        fig_qual = px.bar(
-            resumo_qualificacoes.head(10),
+        st.write("### Solicitações específicas recorrentes")
+        fig_solicitacoes = px.bar(
+            resumo_solicitacoes.head(10),
             x="Chamados",
-            y="Qualificação",
+            y="Solicitação Específica",
             orientation="h",
             text="Chamados",
-            title="Top qualificações solicitadas",
+            title="Solicitações específicas mais recorrentes",
         )
-        fig_qual.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_qual, use_container_width=True)
+        fig_solicitacoes.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_solicitacoes, use_container_width=True)
 
     with g6:
-        st.write("### Ofensores fora do SLA")
-        if resumo_ofensor_sla.empty:
+        st.write("### Causas de SLA vencido")
+        if resumo_causa_sla_vencido.empty:
             st.info("Nenhum chamado fora do SLA.")
         else:
-            fig_ofensor_sla = px.bar(
-                resumo_ofensor_sla,
+            fig_causa_sla = px.bar(
+                resumo_causa_sla_vencido,
                 x="Chamados",
-                y="Ofensor fora do SLA",
+                y="Causa de SLA vencido",
                 orientation="h",
                 text="Chamados",
-                title="Qualificações que mais ficaram fora do SLA",
+                title="Solicitações que mais ficaram fora do SLA",
             )
-            fig_ofensor_sla.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig_ofensor_sla, use_container_width=True)
+            fig_causa_sla.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_causa_sla, use_container_width=True)
 
-    st.write("### Ofensores acima de 72h / abertos")
-    if resumo_ofensor_72h.empty:
+    st.write("### Causas de atraso operacional")
+    if resumo_causa_atraso.empty:
         st.info("Nenhum chamado acima de 72h ou aberto.")
     else:
-        fig_ofensor_72h = px.bar(
-            resumo_ofensor_72h,
+        fig_causa_atraso = px.bar(
+            resumo_causa_atraso,
             x="Chamados",
-            y="Ofensor acima de 72h / aberto",
+            y="Causa de atraso operacional",
             orientation="h",
             text="Chamados",
-            title="Qualificações acima de 72h ou abertas",
+            title="Solicitações acima de 72h ou em aberto/em tratamento",
         )
-        fig_ofensor_72h.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_ofensor_72h, use_container_width=True)
+        fig_causa_atraso.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_causa_atraso, use_container_width=True)
 
     st.subheader("Tabelas de conferência")
 
     t1, t2 = st.columns(2)
 
     with t1:
-        st.write("Empresas")
+        st.write("Clientes")
         st.dataframe(resumo_empresas, use_container_width=True)
 
     with t2:
-        st.write("Maiores dores gerais")
-        st.dataframe(resumo_dor_geral, use_container_width=True)
+        st.write("Categorias principais")
+        st.dataframe(resumo_categoria_principal, use_container_width=True)
 
-    st.write("Qualificações")
-    st.dataframe(resumo_qualificacoes, use_container_width=True)
+    st.write("Solicitações específicas")
+    st.dataframe(resumo_solicitacoes, use_container_width=True)
 
     with st.expander("Ver os chamados em aberto / Em tratamento"):
         st.dataframe(chamados_abertos, use_container_width=True)
@@ -675,12 +694,12 @@ try:
     excel_dashboard = gerar_excel_dashboard(
         indicadores,
         resumo_empresas,
-        resumo_dor_geral,
-        resumo_qualificacoes,
+        resumo_categoria_principal,
+        resumo_solicitacoes,
         resumo_sla,
         resumo_72h,
-        resumo_ofensor_sla,
-        resumo_ofensor_72h,
+        resumo_causa_sla_vencido,
+        resumo_causa_atraso,
         chamados_abertos,
     )
 
