@@ -3,16 +3,20 @@ import re
 import unicodedata
 
 import pandas as pd
-import streamlit as st
 import plotly.express as px
+import streamlit as st
 
 
 st.set_page_config(
     page_title="Dashboard de Chamados",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
 )
 
+
+# =========================
+# FUNÇÕES AUXILIARES
+# =========================
 
 def normalizar_texto(texto):
     texto = str(texto).strip().lower()
@@ -20,6 +24,14 @@ def normalizar_texto(texto):
     texto = "".join([c for c in texto if not unicodedata.combining(c)])
     texto = re.sub(r"[^a-z0-9]+", " ", texto)
     return texto.strip()
+
+
+def limpar_texto(texto):
+    if pd.isna(texto):
+        return "Não informado"
+    texto = str(texto).strip()
+    texto = re.sub(r"\s+", " ", texto)
+    return texto if texto else "Não informado"
 
 
 def encontrar_coluna(df, opcoes):
@@ -61,7 +73,80 @@ def preparar_datas(df, coluna):
     return df
 
 
-def gerar_excel_dashboard(indicadores, resumo_empresas, resumo_qualificacoes, resumo_sla, resumo_72h):
+def montar_empresa_analise(row, col_empresa, col_de):
+    """
+    Regra principal: usa a coluna Empresa.
+
+    Correção especial CBLOC:
+    Na base, várias filiais aparecem em 'De'.
+    Para o indicador de empresa que criou o chamado, CBLOC deve ser consolidada quando 'De' contém CBLOC.
+
+    Quando Empresa contém CBLOC, mas De é Casa do Construtor,
+    o chamado fica para Casa do Construtor.
+    """
+    empresa = limpar_texto(row[col_empresa])
+    de = limpar_texto(row[col_de]) if col_de else ""
+
+    empresa_norm = normalizar_texto(empresa)
+    de_norm = normalizar_texto(de)
+
+    if "cbloc" in de_norm:
+        return "CBLOC BRASIL LOCAÇÃO DE EQUIPAMENTOS LTDA"
+
+    if "cbloc" in empresa_norm and "casa do construtor" in de_norm:
+        return "CASA DO CONSTRUTOR"
+
+    return empresa
+
+
+def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria):
+    # Preferência: Tipo + Item, pois representa melhor a solicitação real.
+    # Exemplo: Ramal - Configuração de ramal.
+    if col_tipo and col_item:
+        return (
+            df[col_tipo].fillna("Não informado").astype(str).str.strip()
+            + " - "
+            + df[col_item].fillna("Não informado").astype(str).str.strip()
+        )
+
+    if col_qualificacao:
+        return df[col_qualificacao].fillna("Não informado").astype(str).str.strip()
+
+    if col_categoria:
+        return df[col_categoria].fillna("Não informado").astype(str).str.strip()
+
+    return "Não informado"
+
+
+def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
+    base = df.copy()
+
+    if filtro is not None:
+        base = base[filtro]
+
+    if base.empty:
+        return pd.DataFrame(columns=[nome_coluna, "Chamados"])
+
+    return (
+        base.groupby(coluna)
+        .size()
+        .reset_index(name="Chamados")
+        .rename(columns={coluna: nome_coluna})
+        .sort_values("Chamados", ascending=False)
+        .head(top)
+    )
+
+
+def gerar_excel_dashboard(
+    indicadores,
+    resumo_empresas,
+    resumo_qualificacoes,
+    resumo_sla,
+    resumo_72h,
+    resumo_ofensor_sla,
+    resumo_ofensor_72h,
+    chamados_abertos,
+):
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -75,25 +160,25 @@ def gerar_excel_dashboard(indicadores, resumo_empresas, resumo_qualificacoes, re
             "align": "center",
             "valign": "vcenter",
             "font_color": "white",
-            "bg_color": "#1F4E78"
+            "bg_color": "#1F4E78",
         })
 
         fmt_card = workbook.add_format({
             "bold": True,
-            "font_size": 13,
+            "font_size": 12,
             "align": "center",
             "valign": "vcenter",
             "border": 1,
-            "bg_color": "#D9EAF7"
+            "bg_color": "#D9EAF7",
         })
 
         fmt_card_valor = workbook.add_format({
             "bold": True,
-            "font_size": 20,
+            "font_size": 18,
             "align": "center",
             "valign": "vcenter",
             "border": 1,
-            "bg_color": "#F2F2F2"
+            "bg_color": "#F2F2F2",
         })
 
         fmt_secao = workbook.add_format({
@@ -101,28 +186,28 @@ def gerar_excel_dashboard(indicadores, resumo_empresas, resumo_qualificacoes, re
             "font_size": 12,
             "font_color": "white",
             "bg_color": "#4472C4",
-            "border": 1
+            "border": 1,
         })
 
         fmt_header = workbook.add_format({
             "bold": True,
             "bg_color": "#B4C6E7",
             "border": 1,
-            "align": "center"
+            "align": "center",
         })
 
         fmt_cell = workbook.add_format({"border": 1})
 
-        worksheet.set_column("A:A", 4)
-        worksheet.set_column("B:B", 35)
-        worksheet.set_column("C:C", 18)
-        worksheet.set_column("D:D", 18)
-        worksheet.set_column("E:E", 18)
-        worksheet.set_column("F:F", 35)
-        worksheet.set_column("G:G", 18)
-        worksheet.set_column("H:H", 18)
-        worksheet.set_column("I:I", 18)
-        worksheet.set_column("J:J", 18)
+        worksheet.set_column("A:A", 3)
+        worksheet.set_column("B:B", 36)
+        worksheet.set_column("C:C", 14)
+        worksheet.set_column("D:D", 20)
+        worksheet.set_column("E:E", 20)
+        worksheet.set_column("F:F", 36)
+        worksheet.set_column("G:G", 14)
+        worksheet.set_column("H:H", 20)
+        worksheet.set_column("I:I", 20)
+        worksheet.set_column("J:J", 20)
 
         worksheet.merge_range("B2:J3", "DASHBOARD DE CHAMADOS", fmt_titulo)
 
@@ -132,9 +217,9 @@ def gerar_excel_dashboard(indicadores, resumo_empresas, resumo_qualificacoes, re
             ("SLA tratado", indicadores["sla_tratado"]),
             ("Dentro do SLA", indicadores["dentro_sla"]),
             ("Fora do SLA", indicadores["fora_sla"]),
-            ("% dentro SLA", f'{indicadores["percentual_dentro_sla"]:.1f}%'),
+            ("Em aberto / sem encerramento", indicadores["em_aberto"]),
             ("Tratados até 72h", indicadores["ate_72h"]),
-            ("Acima de 72h / abertos", indicadores["acima_72h"]),
+            ("Acima 72h / abertos", indicadores["nao_72h"]),
         ]
 
         posicoes = [
@@ -161,6 +246,14 @@ def gerar_excel_dashboard(indicadores, resumo_empresas, resumo_qualificacoes, re
         worksheet.merge_range("B15:E15", indicadores["qualificacao_top"], fmt_cell)
         worksheet.write("F14", "Qtd.", fmt_secao)
         worksheet.write("F15", indicadores["qualificacao_top_qtd"], fmt_cell)
+
+        worksheet.merge_range("G11:J11", "Maior ofensor fora do SLA", fmt_secao)
+        worksheet.merge_range("G12:I12", indicadores["ofensor_sla"], fmt_cell)
+        worksheet.write("J12", indicadores["ofensor_sla_qtd"], fmt_cell)
+
+        worksheet.merge_range("G14:J14", "Maior ofensor acima de 72h / aberto", fmt_secao)
+        worksheet.merge_range("G15:I15", indicadores["ofensor_72h"], fmt_cell)
+        worksheet.write("J15", indicadores["ofensor_72h_qtd"], fmt_cell)
 
         linha = 18
         worksheet.merge_range(linha, 1, linha, 3, "Top empresas por chamados", fmt_secao)
@@ -209,301 +302,390 @@ def gerar_excel_dashboard(indicadores, resumo_empresas, resumo_qualificacoes, re
         chart_72h = workbook.add_chart({"type": "pie"})
         chart_72h.add_series({
             "name": "Tratamento em 72 horas",
-            "categories": ["Dashboard", 34, 5, 35, 5],
-            "values": ["Dashboard", 34, 6, 35, 6],
-            "data_labels": {"percentage": True, "category": True}
+            "categories": ["Dashboard", 34, 5, 36, 5],
+            "values": ["Dashboard", 34, 6, 36, 6],
+            "data_labels": {"percentage": True, "category": True},
         })
-        chart_72h.set_title({"name": "Chamados tratados em até 72 horas"})
-        worksheet.insert_chart("H32", chart_72h, {"x_scale": 1.2, "y_scale": 1.2})
+        chart_72h.set_title({"name": "Tratamento em 72 horas"})
+        worksheet.insert_chart("H32", chart_72h, {"x_scale": 1.15, "y_scale": 1.15})
 
         chart_empresas = workbook.add_chart({"type": "bar"})
         chart_empresas.add_series({
             "name": "Chamados",
             "categories": ["Dashboard", 20, 1, 29, 1],
             "values": ["Dashboard", 20, 2, 29, 2],
-            "data_labels": {"value": True}
+            "data_labels": {"value": True},
         })
         chart_empresas.set_title({"name": "Top empresas por chamados"})
-        worksheet.insert_chart("B38", chart_empresas, {"x_scale": 1.5, "y_scale": 1.5})
+        worksheet.insert_chart("B39", chart_empresas, {"x_scale": 1.5, "y_scale": 1.45})
 
         chart_qual = workbook.add_chart({"type": "bar"})
         chart_qual.add_series({
             "name": "Chamados",
             "categories": ["Dashboard", 20, 5, 29, 5],
             "values": ["Dashboard", 20, 6, 29, 6],
-            "data_labels": {"value": True}
+            "data_labels": {"value": True},
         })
         chart_qual.set_title({"name": "Top qualificações solicitadas"})
-        worksheet.insert_chart("G38", chart_qual, {"x_scale": 1.5, "y_scale": 1.5})
+        worksheet.insert_chart("G39", chart_qual, {"x_scale": 1.5, "y_scale": 1.45})
+
+        # Abas auxiliares para auditoria
+        resumo_empresas.to_excel(writer, sheet_name="Empresas", index=False)
+        resumo_qualificacoes.to_excel(writer, sheet_name="Qualificações", index=False)
+        resumo_sla.to_excel(writer, sheet_name="SLA", index=False)
+        resumo_72h.to_excel(writer, sheet_name="72h", index=False)
+        resumo_ofensor_sla.to_excel(writer, sheet_name="Ofensor_SLA", index=False)
+        resumo_ofensor_72h.to_excel(writer, sheet_name="Ofensor_72h", index=False)
+        chamados_abertos.to_excel(writer, sheet_name="Abertos_sem_encerramento", index=False)
 
     output.seek(0)
     return output
 
 
+# =========================
+# INTERFACE
+# =========================
+
 st.title("📊 Dashboard de Chamados")
 st.write("Envie a planilha do mês para gerar o dashboard atualizado automaticamente.")
 
-arquivo = st.file_uploader(
-    "Faça upload da planilha",
-    type=["xls", "xlsx", "xlsm", "csv"]
-)
+arquivo = st.file_uploader("Faça upload da planilha", type=["xls", "xlsx", "xlsm", "csv"])
 
-if arquivo is not None:
-    try:
-        df = ler_arquivo(arquivo)
-
-        col_empresa = encontrar_coluna(df, [
-            "Empresa", "Cliente", "Nome Fantasia", "Razão Social", "Razao Social"
-        ])
-
-        col_abertura = encontrar_coluna(df, [
-            "Abertura", "Data Abertura", "Data de Abertura", "Criado em", "Data de Criação"
-        ])
-
-        col_encerramento = encontrar_coluna(df, [
-            "Encerramento", "Data Encerramento", "Data de Encerramento", "Fechado em", "Resolvido em"
-        ])
-
-        col_vencimento = encontrar_coluna(df, [
-            "Vencimento", "Data Vencimento", "SLA", "Prazo", "Data SLA"
-        ])
-
-        col_qualificacao = encontrar_coluna(df, [
-            "Categoria", "Qualificação", "Qualificacao", "Tipo", "Item", "Assunto", "Serviço", "Servico"
-        ])
-
-        colunas_obrigatorias = {
-            "Empresa": col_empresa,
-            "Abertura": col_abertura,
-            "Encerramento": col_encerramento,
-            "Vencimento": col_vencimento,
-            "Qualificação/Categoria": col_qualificacao,
-        }
-
-        colunas_faltando = [nome for nome, coluna in colunas_obrigatorias.items() if coluna is None]
-
-        if colunas_faltando:
-            st.error("Não consegui identificar automaticamente algumas colunas.")
-            st.write("Colunas faltando:")
-            st.write(colunas_faltando)
-            st.write("Colunas encontradas na planilha:")
-            st.write(list(df.columns))
-            st.stop()
-
-        st.success("Arquivo carregado com sucesso!")
-
-        df = preparar_datas(df, col_abertura)
-        df = preparar_datas(df, col_encerramento)
-        df = preparar_datas(df, col_vencimento)
-
-        df[col_empresa] = df[col_empresa].fillna("Não informado").astype(str).str.strip()
-        df[col_qualificacao] = df[col_qualificacao].fillna("Não informado").astype(str).str.strip()
-
-        total_chamados = len(df)
-        total_empresas = df[col_empresa].nunique()
-
-        df["Status SLA"] = "Não tratado"
-
-        mask_fechado_com_prazo = df[col_encerramento].notna() & df[col_vencimento].notna()
-
-        df.loc[
-            mask_fechado_com_prazo & (df[col_encerramento] <= df[col_vencimento]),
-            "Status SLA"
-        ] = "Dentro do SLA"
-
-        df.loc[
-            mask_fechado_com_prazo & (df[col_encerramento] > df[col_vencimento]),
-            "Status SLA"
-        ] = "Fora do SLA"
-
-        sla_tratado = int(mask_fechado_com_prazo.sum())
-        dentro_sla = int((df["Status SLA"] == "Dentro do SLA").sum())
-        fora_sla = int((df["Status SLA"] == "Fora do SLA").sum())
-        percentual_dentro_sla = (dentro_sla / sla_tratado * 100) if sla_tratado > 0 else 0
-
-        df["Horas para tratamento"] = None
-        mask_fechado_com_abertura = df[col_abertura].notna() & df[col_encerramento].notna()
-
-        df.loc[mask_fechado_com_abertura, "Horas para tratamento"] = (
-            (
-                df.loc[mask_fechado_com_abertura, col_encerramento]
-                - df.loc[mask_fechado_com_abertura, col_abertura]
-            ).dt.total_seconds() / 3600
-        )
-
-        df["Status 72h"] = "Acima de 72h ou em aberto"
-
-        df.loc[
-            mask_fechado_com_abertura & (df["Horas para tratamento"] <= 72),
-            "Status 72h"
-        ] = "Tratado até 72h"
-
-        ate_72h = int((df["Status 72h"] == "Tratado até 72h").sum())
-        acima_72h = int((df["Status 72h"] == "Acima de 72h ou em aberto").sum())
-
-        resumo_empresas = (
-            df.groupby(col_empresa)
-            .size()
-            .reset_index(name="Chamados")
-            .rename(columns={col_empresa: "Empresa"})
-            .sort_values("Chamados", ascending=False)
-        )
-
-        resumo_qualificacoes = (
-            df.groupby(col_qualificacao)
-            .size()
-            .reset_index(name="Chamados")
-            .rename(columns={col_qualificacao: "Qualificação"})
-            .sort_values("Chamados", ascending=False)
-        )
-
-        resumo_sla = (
-            df.groupby("Status SLA")
-            .size()
-            .reset_index(name="Chamados")
-        )
-
-        resumo_72h = (
-            df.groupby("Status 72h")
-            .size()
-            .reset_index(name="Chamados")
-        )
-
-        empresa_top = resumo_empresas.iloc[0]["Empresa"]
-        empresa_top_qtd = int(resumo_empresas.iloc[0]["Chamados"])
-
-        qualificacao_top = resumo_qualificacoes.iloc[0]["Qualificação"]
-        qualificacao_top_qtd = int(resumo_qualificacoes.iloc[0]["Chamados"])
-
-        indicadores = {
-            "total_chamados": total_chamados,
-            "total_empresas": total_empresas,
-            "sla_tratado": sla_tratado,
-            "dentro_sla": dentro_sla,
-            "fora_sla": fora_sla,
-            "percentual_dentro_sla": percentual_dentro_sla,
-            "ate_72h": ate_72h,
-            "acima_72h": acima_72h,
-            "empresa_top": empresa_top,
-            "empresa_top_qtd": empresa_top_qtd,
-            "qualificacao_top": qualificacao_top,
-            "qualificacao_top_qtd": qualificacao_top_qtd,
-        }
-
-        st.subheader("Dashboard atualizado")
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Total de chamados", total_chamados)
-        k2.metric("Empresas com chamados", total_empresas)
-        k3.metric("SLA tratado", sla_tratado)
-        k4.metric("% dentro SLA", f"{percentual_dentro_sla:.1f}%")
-
-        k5, k6, k7, k8 = st.columns(4)
-        k5.metric("Dentro do SLA", dentro_sla)
-        k6.metric("Fora do SLA", fora_sla)
-        k7.metric("Tratados até 72h", ate_72h)
-        k8.metric("Acima de 72h / abertos", acima_72h)
-
-        st.info(f"Empresa com mais chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
-        st.info(f"Qualificação mais solicitada: **{qualificacao_top}** — {qualificacao_top_qtd} chamados.")
-
-        g1, g2 = st.columns(2)
-
-        with g1:
-            st.write("### Tratamento em 72 horas")
-            fig_72h = px.pie(
-                resumo_72h,
-                names="Status 72h",
-                values="Chamados",
-                hole=0.35,
-                title="Tratados até 72h x acima de 72h / abertos"
-            )
-            st.plotly_chart(fig_72h, use_container_width=True)
-
-        with g2:
-            st.write("### SLA")
-            fig_sla = px.bar(
-                resumo_sla,
-                x="Status SLA",
-                y="Chamados",
-                text="Chamados",
-                title="Resumo SLA"
-            )
-            st.plotly_chart(fig_sla, use_container_width=True)
-
-        g3, g4 = st.columns(2)
-
-        with g3:
-            st.write("### Top empresas por chamados")
-            fig_empresas = px.bar(
-                resumo_empresas.head(10),
-                x="Chamados",
-                y="Empresa",
-                orientation="h",
-                text="Chamados",
-                title="Top empresas"
-            )
-            fig_empresas.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig_empresas, use_container_width=True)
-
-        with g4:
-            st.write("### Top qualificações")
-            fig_qual = px.bar(
-                resumo_qualificacoes.head(10),
-                x="Chamados",
-                y="Qualificação",
-                orientation="h",
-                text="Chamados",
-                title="Top qualificações solicitadas"
-            )
-            fig_qual.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig_qual, use_container_width=True)
-
-        st.subheader("Tabelas de conferência")
-
-        t1, t2 = st.columns(2)
-
-        with t1:
-            st.write("Empresas")
-            st.dataframe(resumo_empresas, use_container_width=True)
-
-        with t2:
-            st.write("Qualificações")
-            st.dataframe(resumo_qualificacoes, use_container_width=True)
-
-        total_resumo_72h = int(resumo_72h["Chamados"].sum())
-        total_resumo_sla = int(resumo_sla["Chamados"].sum())
-
-        st.subheader("Conferência dos totais")
-
-        if total_resumo_72h == total_chamados:
-            st.success(f"Resumo 72h está batendo: {total_resumo_72h} chamados.")
-        else:
-            st.error(f"Resumo 72h não está batendo. Base: {total_chamados} | Resumo: {total_resumo_72h}")
-
-        if total_resumo_sla == total_chamados:
-            st.success(f"Resumo SLA está batendo: {total_resumo_sla} chamados.")
-        else:
-            st.warning(f"Resumo SLA precisa verificar. Base: {total_chamados} | Resumo: {total_resumo_sla}")
-
-        excel_dashboard = gerar_excel_dashboard(
-            indicadores,
-            resumo_empresas,
-            resumo_qualificacoes,
-            resumo_sla,
-            resumo_72h
-        )
-
-        st.download_button(
-            label="📥 Baixar dashboard em Excel",
-            data=excel_dashboard,
-            file_name="dashboard_chamados_atualizado.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    except Exception as e:
-        st.error("Erro ao processar a planilha.")
-        st.exception(e)
-
-else:
+if arquivo is None:
     st.warning("Envie uma planilha para começar.")
+    st.stop()
+
+try:
+    df = ler_arquivo(arquivo)
+
+    col_empresa = encontrar_coluna(df, ["Empresa", "Cliente", "Nome Fantasia", "Razão Social", "Razao Social"])
+    col_de = encontrar_coluna(df, ["De", "Solicitante", "Aberto por", "Cliente Solicitante"])
+    col_abertura = encontrar_coluna(df, ["Abertura", "Data Abertura", "Data de Abertura", "Criado em", "Data de Criação"])
+    col_encerramento = encontrar_coluna(df, ["Encerramento", "Data Encerramento", "Data de Encerramento", "Fechado em", "Resolvido em"])
+    col_vencimento = encontrar_coluna(df, ["Vencimento", "Data Vencimento", "SLA", "Prazo", "Data SLA"])
+    col_tipo = encontrar_coluna(df, ["Tipo"])
+    col_item = encontrar_coluna(df, ["Item"])
+    col_qualificacao = encontrar_coluna(df, ["Qualificação", "Qualificacao", "Classificação", "Classificacao"])
+    col_categoria = encontrar_coluna(df, ["Categoria", "Assunto", "Serviço", "Servico"])
+    col_status = encontrar_coluna(df, ["Status", "Situação", "Situacao"])
+    col_responsavel = encontrar_coluna(df, ["Responsável", "Responsavel", "Atendente", "Analista"])
+    col_numero = encontrar_coluna(df, ["N", "Número", "Numero", "Chamado", "Ticket"])
+
+    colunas_obrigatorias = {
+        "Empresa": col_empresa,
+        "Abertura": col_abertura,
+        "Encerramento": col_encerramento,
+        "Vencimento": col_vencimento,
+    }
+
+    faltando = [nome for nome, coluna in colunas_obrigatorias.items() if coluna is None]
+
+    if faltando:
+        st.error("Não consegui identificar automaticamente algumas colunas obrigatórias.")
+        st.write("Colunas faltando:", faltando)
+        st.write("Colunas encontradas na planilha:", list(df.columns))
+        st.stop()
+
+    st.success("Arquivo carregado com sucesso!")
+
+    df = preparar_datas(df, col_abertura)
+    df = preparar_datas(df, col_encerramento)
+    df = preparar_datas(df, col_vencimento)
+
+    df["Empresa Análise"] = df.apply(lambda row: montar_empresa_analise(row, col_empresa, col_de), axis=1)
+    df["Qualificação Análise"] = montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
+    df["Qualificação Análise"] = df["Qualificação Análise"].fillna("Não informado").astype(str).str.strip()
+
+    total_chamados = len(df)
+    total_empresas = df["Empresa Análise"].nunique()
+
+    # SLA
+    df["Status SLA"] = "Em aberto / sem encerramento"
+    mask_fechado_com_prazo = df[col_encerramento].notna() & df[col_vencimento].notna()
+
+    df.loc[
+        mask_fechado_com_prazo & (df[col_encerramento] <= df[col_vencimento]),
+        "Status SLA",
+    ] = "Dentro do SLA"
+
+    df.loc[
+        mask_fechado_com_prazo & (df[col_encerramento] > df[col_vencimento]),
+        "Status SLA",
+    ] = "Fora do SLA"
+
+    sla_tratado = int(mask_fechado_com_prazo.sum())
+    dentro_sla = int((df["Status SLA"] == "Dentro do SLA").sum())
+    fora_sla = int((df["Status SLA"] == "Fora do SLA").sum())
+    em_aberto = int((df["Status SLA"] == "Em aberto / sem encerramento").sum())
+    percentual_dentro_sla = (dentro_sla / sla_tratado * 100) if sla_tratado > 0 else 0
+
+    # 72 horas
+    df["Horas para tratamento"] = None
+    mask_fechado_com_abertura = df[col_abertura].notna() & df[col_encerramento].notna()
+
+    df.loc[mask_fechado_com_abertura, "Horas para tratamento"] = (
+        (
+            df.loc[mask_fechado_com_abertura, col_encerramento]
+            - df.loc[mask_fechado_com_abertura, col_abertura]
+        ).dt.total_seconds() / 3600
+    )
+
+    df["Status 72h"] = "Em aberto / sem encerramento"
+
+    df.loc[
+        mask_fechado_com_abertura & (df["Horas para tratamento"] <= 72),
+        "Status 72h",
+    ] = "Tratado até 72h"
+
+    df.loc[
+        mask_fechado_com_abertura & (df["Horas para tratamento"] > 72),
+        "Status 72h",
+    ] = "Tratado acima de 72h"
+
+    ate_72h = int((df["Status 72h"] == "Tratado até 72h").sum())
+    acima_72h = int((df["Status 72h"] == "Tratado acima de 72h").sum())
+    nao_72h = int((df["Status 72h"] != "Tratado até 72h").sum())
+
+    # Resumos principais
+    resumo_empresas = resumo_top(df, "Empresa Análise", "Empresa", top=50)
+    resumo_qualificacoes = resumo_top(df, "Qualificação Análise", "Qualificação", top=50)
+
+    resumo_sla = df.groupby("Status SLA").size().reset_index(name="Chamados")
+    resumo_72h = df.groupby("Status 72h").size().reset_index(name="Chamados")
+
+    resumo_ofensor_sla = resumo_top(
+        df,
+        "Qualificação Análise",
+        "Ofensor fora do SLA",
+        filtro=(df["Status SLA"] == "Fora do SLA"),
+        top=10,
+    )
+
+    resumo_ofensor_72h = resumo_top(
+        df,
+        "Qualificação Análise",
+        "Ofensor acima de 72h / aberto",
+        filtro=(df["Status 72h"] != "Tratado até 72h"),
+        top=10,
+    )
+
+    empresa_top = resumo_empresas.iloc[0]["Empresa"] if not resumo_empresas.empty else "-"
+    empresa_top_qtd = int(resumo_empresas.iloc[0]["Chamados"]) if not resumo_empresas.empty else 0
+
+    qualificacao_top = resumo_qualificacoes.iloc[0]["Qualificação"] if not resumo_qualificacoes.empty else "-"
+    qualificacao_top_qtd = int(resumo_qualificacoes.iloc[0]["Chamados"]) if not resumo_qualificacoes.empty else 0
+
+    ofensor_sla = resumo_ofensor_sla.iloc[0]["Ofensor fora do SLA"] if not resumo_ofensor_sla.empty else "-"
+    ofensor_sla_qtd = int(resumo_ofensor_sla.iloc[0]["Chamados"]) if not resumo_ofensor_sla.empty else 0
+
+    ofensor_72h = resumo_ofensor_72h.iloc[0]["Ofensor acima de 72h / aberto"] if not resumo_ofensor_72h.empty else "-"
+    ofensor_72h_qtd = int(resumo_ofensor_72h.iloc[0]["Chamados"]) if not resumo_ofensor_72h.empty else 0
+
+    indicadores = {
+        "total_chamados": total_chamados,
+        "total_empresas": total_empresas,
+        "sla_tratado": sla_tratado,
+        "dentro_sla": dentro_sla,
+        "fora_sla": fora_sla,
+        "em_aberto": em_aberto,
+        "percentual_dentro_sla": percentual_dentro_sla,
+        "ate_72h": ate_72h,
+        "acima_72h": acima_72h,
+        "nao_72h": nao_72h,
+        "empresa_top": empresa_top,
+        "empresa_top_qtd": empresa_top_qtd,
+        "qualificacao_top": qualificacao_top,
+        "qualificacao_top_qtd": qualificacao_top_qtd,
+        "ofensor_sla": ofensor_sla,
+        "ofensor_sla_qtd": ofensor_sla_qtd,
+        "ofensor_72h": ofensor_72h,
+        "ofensor_72h_qtd": ofensor_72h_qtd,
+    }
+
+    # Tabela dos chamados sem encerramento
+    colunas_abertos = []
+
+    for c in [
+        col_numero,
+        col_abertura,
+        col_empresa,
+        col_de,
+        col_responsavel,
+        col_tipo,
+        col_item,
+        col_vencimento,
+        col_encerramento,
+        col_status,
+        col_categoria,
+    ]:
+        if c and c not in colunas_abertos:
+            colunas_abertos.append(c)
+
+    chamados_abertos = df.loc[df["Status SLA"] == "Em aberto / sem encerramento", colunas_abertos].copy()
+
+    # =========================
+    # DASHBOARD
+    # =========================
+
+    st.subheader("Dashboard atualizado")
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total de chamados", total_chamados)
+    k2.metric("Empresas com chamados", total_empresas)
+    k3.metric("SLA tratado", sla_tratado)
+    k4.metric("% dentro SLA", f"{percentual_dentro_sla:.1f}%")
+
+    k5, k6, k7, k8 = st.columns(4)
+    k5.metric("Dentro do SLA", dentro_sla)
+    k6.metric("Fora do SLA", fora_sla)
+    k7.metric("Em aberto / sem encerramento", em_aberto)
+    k8.metric("Tratados até 72h", ate_72h)
+
+    k9, k10, k11, k12 = st.columns(4)
+    k9.metric("Tratados acima de 72h", acima_72h)
+    k10.metric("Acima de 72h / abertos", nao_72h)
+    k11.metric("Ofensor fora do SLA", ofensor_sla_qtd)
+    k12.metric("Ofensor 72h / aberto", ofensor_72h_qtd)
+
+    st.info(f"Empresa com mais chamados: **{empresa_top}** — {empresa_top_qtd} chamados.")
+    st.info(f"Qualificação mais solicitada: **{qualificacao_top}** — {qualificacao_top_qtd} chamados.")
+    st.warning(f"Maior ofensor fora do SLA: **{ofensor_sla}** — {ofensor_sla_qtd} chamados fora do SLA.")
+    st.warning(f"Maior ofensor acima de 72h / aberto: **{ofensor_72h}** — {ofensor_72h_qtd} chamados.")
+
+    g1, g2 = st.columns(2)
+
+    with g1:
+        st.write("### Tratamento em 72 horas")
+        fig_72h = px.pie(
+            resumo_72h,
+            names="Status 72h",
+            values="Chamados",
+            hole=0.35,
+            title="Tratados até 72h x acima de 72h x abertos",
+        )
+        st.plotly_chart(fig_72h, use_container_width=True)
+
+    with g2:
+        st.write("### SLA")
+        fig_sla = px.bar(
+            resumo_sla,
+            x="Status SLA",
+            y="Chamados",
+            text="Chamados",
+            title="Resumo SLA",
+        )
+        st.plotly_chart(fig_sla, use_container_width=True)
+
+    g3, g4 = st.columns(2)
+
+    with g3:
+        st.write("### Top empresas por chamados")
+        fig_empresas = px.bar(
+            resumo_empresas.head(10),
+            x="Chamados",
+            y="Empresa",
+            orientation="h",
+            text="Chamados",
+            title="Top empresas",
+        )
+        fig_empresas.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_empresas, use_container_width=True)
+
+    with g4:
+        st.write("### Top qualificações")
+        fig_qual = px.bar(
+            resumo_qualificacoes.head(10),
+            x="Chamados",
+            y="Qualificação",
+            orientation="h",
+            text="Chamados",
+            title="Top qualificações solicitadas",
+        )
+        fig_qual.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_qual, use_container_width=True)
+
+    g5, g6 = st.columns(2)
+
+    with g5:
+        st.write("### Ofensores fora do SLA")
+        if resumo_ofensor_sla.empty:
+            st.info("Nenhum chamado fora do SLA.")
+        else:
+            fig_ofensor_sla = px.bar(
+                resumo_ofensor_sla,
+                x="Chamados",
+                y="Ofensor fora do SLA",
+                orientation="h",
+                text="Chamados",
+                title="Qualificações que mais ficaram fora do SLA",
+            )
+            fig_ofensor_sla.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_ofensor_sla, use_container_width=True)
+
+    with g6:
+        st.write("### Ofensores acima de 72h / abertos")
+        if resumo_ofensor_72h.empty:
+            st.info("Nenhum chamado acima de 72h ou aberto.")
+        else:
+            fig_ofensor_72h = px.bar(
+                resumo_ofensor_72h,
+                x="Chamados",
+                y="Ofensor acima de 72h / aberto",
+                orientation="h",
+                text="Chamados",
+                title="Qualificações acima de 72h ou abertas",
+            )
+            fig_ofensor_72h.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_ofensor_72h, use_container_width=True)
+
+    st.subheader("Tabelas de conferência")
+
+    t1, t2 = st.columns(2)
+
+    with t1:
+        st.write("Empresas")
+        st.dataframe(resumo_empresas, use_container_width=True)
+
+    with t2:
+        st.write("Qualificações")
+        st.dataframe(resumo_qualificacoes, use_container_width=True)
+
+    with st.expander("Ver os chamados em aberto / sem encerramento"):
+        st.dataframe(chamados_abertos, use_container_width=True)
+
+    st.subheader("Conferência dos totais")
+
+    total_resumo_72h = int(resumo_72h["Chamados"].sum())
+    total_resumo_sla = int(resumo_sla["Chamados"].sum())
+
+    if total_resumo_72h == total_chamados:
+        st.success(f"Resumo 72h está batendo: {total_resumo_72h} chamados.")
+    else:
+        st.error(f"Resumo 72h não está batendo. Base: {total_chamados} | Resumo: {total_resumo_72h}")
+
+    if total_resumo_sla == total_chamados:
+        st.success(f"Resumo SLA está batendo: {total_resumo_sla} chamados.")
+    else:
+        st.error(f"Resumo SLA não está batendo. Base: {total_chamados} | Resumo: {total_resumo_sla}")
+
+    excel_dashboard = gerar_excel_dashboard(
+        indicadores,
+        resumo_empresas,
+        resumo_qualificacoes,
+        resumo_sla,
+        resumo_72h,
+        resumo_ofensor_sla,
+        resumo_ofensor_72h,
+        chamados_abertos,
+    )
+
+    st.download_button(
+        label="📥 Baixar dashboard em Excel",
+        data=excel_dashboard,
+        file_name="dashboard_chamados_atualizado.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+except Exception as e:
+    st.error("Erro ao processar a planilha.")
+    st.exception(e)
