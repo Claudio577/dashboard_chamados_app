@@ -78,17 +78,102 @@ def gerar_periodo_ordem(mes, ano):
     return f"{ano:04d}-{mes:02d}"
 
 
-def calcular_variacao_percentual(valor_atual, valor_anterior):
+def safe_number(value, default=0):
+    """
+    Retorna o valor como float se for numérico, caso contrário retorna o default.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return default
     try:
-        valor_atual = float(valor_atual)
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def format_int(value):
+    """
+    Formata um valor inteiro de forma segura.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "n/d"
+    try:
+        val = int(float(value))
+        return f"{val:,}".replace(",", ".")
+    except (ValueError, TypeError):
+        return "n/d"
+
+def format_diff(value):
+    """
+    Formata uma diferença absoluta com sinal positivo ou negativo de forma segura.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "n/d"
+    try:
+        val = float(value)
+        if val > 0:
+            return f"+{int(val):,}".replace(",", ".") if val.is_integer() else f"+{val:.1f}".replace(".", ",")
+        elif val < 0:
+            return f"{int(val):,}".replace(",", ".") if val.is_integer() else f"{val:.1f}".replace(".", ",")
+        else:
+            return "0"
+    except (ValueError, TypeError):
+        return "n/d"
+
+def format_pct(value):
+    """
+    Formata um valor percentual com sinal de forma segura.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "variação percentual não disponível"
+    try:
+        val = float(value)
+        return f"{val:+.1f}%".replace(".", ",")
+    except (ValueError, TypeError):
+        return "variação percentual não disponível"
+
+def format_raw_pct(value):
+    """
+    Formata uma taxa bruta (ex: 92.4%) de forma segura.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "n/d"
+    try:
+        return f"{float(value):.1f}%".replace(".", ",")
+    except (ValueError, TypeError):
+        return "n/d"
+
+def format_pct_points(value):
+    """
+    Formata uma variação em pontos percentuais (p.p.) de forma segura.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "variação não disponível"
+    try:
+        val = float(value)
+        return f"{val:+.1f} p.p.".replace(".", ",")
+    except (ValueError, TypeError):
+        return "variação não disponível"
+
+def calcular_variacao_percentual(valor_atual, valor_anterior):
+    """
+    Calcula a variação percentual de forma segura contra divisões por zero ou nulos.
+    """
+    if valor_anterior is None or (isinstance(valor_anterior, float) and pd.isna(valor_anterior)):
+        return None
+    try:
         valor_anterior = float(valor_anterior)
     except (ValueError, TypeError):
         return None
 
     if valor_anterior == 0:
-        if valor_atual == 0:
-            return 0.0
         return None
+
+    if valor_atual is None or (isinstance(valor_atual, float) and pd.isna(valor_atual)):
+        valor_atual = 0.0
+    else:
+        try:
+            valor_atual = float(valor_atual)
+        except (ValueError, TypeError):
+            valor_atual = 0.0
 
     return ((valor_atual - valor_anterior) / valor_anterior) * 100
 
@@ -102,44 +187,54 @@ def gerar_resumo_executivo(ind_atual, ind_anterior, label_mes_atual, label_mes_a
     ip = ind_anterior
 
     # Definir diferenças básicas
-    diff_fora = ia["fora_sla"] - ip["fora_sla"]
+    fora_sla_at = safe_number(ia.get("fora_sla", 0))
+    fora_sla_ant = safe_number(ip.get("fora_sla", 0))
+    diff_fora = fora_sla_at - fora_sla_ant
 
     # 1. Volume
-    diff_vol = ia["total_chamados"] - ip["total_chamados"]
-    pct_vol = calcular_variacao_percentual(ia["total_chamados"], ip["total_chamados"])
+    total_at = safe_number(ia.get("total_chamados", 0))
+    total_ant = safe_number(ip.get("total_chamados", 0))
+    diff_vol = total_at - total_ant
+    pct_vol = calcular_variacao_percentual(total_at, total_ant)
     vol_dir = "aumento" if diff_vol > 0 else "redução" if diff_vol < 0 else "estabilidade"
-    var_vol_text = f" passando de {ip['total_chamados']} para {ia['total_chamados']} ({diff_vol:+.0f} / {pct_vol:+.1f}%)" if pct_vol is not None else f" mantendo-se em {ia['total_chamados']} chamados"
+    var_vol_text = f" passando de {format_int(total_ant)} para {format_int(total_at)} ({format_diff(diff_vol)} / {format_pct(pct_vol)})" if pct_vol is not None else f" mantendo-se em {format_int(total_at)} chamados"
 
     # 2. SLA Dentro
-    diff_sla_pct = ia["percentual_dentro_sla"] - ip["percentual_dentro_sla"]
+    pct_sla_at = safe_number(ia.get("percentual_dentro_sla", 0))
+    pct_sla_ant = safe_number(ip.get("percentual_dentro_sla", 0))
+    diff_sla_pct = pct_sla_at - pct_sla_ant
     sla_dir = "melhora" if diff_sla_pct > 0 else "queda" if diff_sla_pct < 0 else "estabilidade"
-    sla_text = f" com a taxa de SLA dentro do prazo subindo de {ip['percentual_dentro_sla']:.1f}% para {ia['percentual_dentro_sla']:.1f}%" if diff_sla_pct > 0 else f" com a taxa de SLA caindo de {ip['percentual_dentro_sla']:.1f}% para {ia['percentual_dentro_sla']:.1f}%"
+    sla_text = f" com a taxa de SLA dentro do prazo subindo de {format_raw_pct(pct_sla_ant)} para {format_raw_pct(pct_sla_at)}" if diff_sla_pct > 0 else f" com a taxa de SLA caindo de {format_raw_pct(pct_sla_ant)} para {format_raw_pct(pct_sla_at)}"
     
     # Detalhar quantidades do SLA
-    sla_dentro_text = f" (os chamados dentro do prazo foram de {ip['dentro_sla']} para {ia['dentro_sla']})"
-    sla_fora_text = f" e os chamados fora do SLA saíram de {ip['fora_sla']} para {ia['fora_sla']}"
+    sla_dentro_text = f" (os chamados dentro do prazo foram de {format_int(ip.get('dentro_sla', 0))} para {format_int(ia.get('dentro_sla', 0))})"
+    sla_fora_text = f" e os chamados fora do SLA saíram de {format_int(ip.get('fora_sla', 0))} para {format_int(ia.get('fora_sla', 0))}"
 
     # 3. Tratamento 72h
-    diff_72h = ia["ate_72h"] - ip["ate_72h"]
-    pct_72h = calcular_variacao_percentual(ia["ate_72h"], ip["ate_72h"])
+    ate_72h_at = safe_number(ia.get("ate_72h", 0))
+    ate_72h_ant = safe_number(ip.get("ate_72h", 0))
+    diff_72h = ate_72h_at - ate_72h_ant
+    pct_72h = calcular_variacao_percentual(ate_72h_at, ate_72h_ant)
     if diff_72h > 0:
-        ate_72h_text = f" O tratamento em até 72 horas também evoluiu, passando de {ip['ate_72h']} para {ia['ate_72h']} chamados ({diff_72h:+.0f} / {pct_72h:+.1f}%)."
+        ate_72h_text = f" O tratamento em até 72 horas também evoluiu, passando de {format_int(ate_72h_ant)} para {format_int(ate_72h_at)} chamados ({format_diff(diff_72h)} / {format_pct(pct_72h)})."
     else:
-        ate_72h_text = f" O volume de chamados resolvidos em até 72h registrou variação de {diff_72h:+.0f} chamados (saindo de {ip['ate_72h']} para {ia['ate_72h']})."
+        ate_72h_text = f" O volume de chamados resolvidos em até 72h registrou variação de {format_diff(diff_72h)} chamados (saindo de {format_int(ate_72h_ant)} para {format_int(ate_72h_at)})."
 
     # 4. Em aberto
-    diff_abertos = ia["em_aberto"] - ip["em_aberto"]
-    abertos_text = f" O estoque de chamados em aberto / em tratamento foi de {ip['em_aberto']} para {ia['em_aberto']}."
+    abertos_at = safe_number(ia.get("em_aberto", 0))
+    abertos_ant = safe_number(ip.get("em_aberto", 0))
+    diff_abertos = abertos_at - abertos_ant
+    abertos_text = f" O estoque de chamados em aberto / em tratamento foi de {format_int(abertos_ant)} para {format_int(abertos_at)}."
 
     # FCR
-    fcr_disponivel = ia.get("fcr_tratado", 0) > 0 and ip.get("fcr_tratado", 0) > 0
+    fcr_disponivel = safe_number(ia.get("fcr_tratado", 0)) > 0 and safe_number(ip.get("fcr_tratado", 0)) > 0
     diff_fcr = 0
     diff_fcr_pct = 0.0
     fcr_text = ""
     if fcr_disponivel:
-        diff_fcr = ia["fcr_1h"] - ip["fcr_1h"]
-        diff_fcr_pct = ia["percentual_fcr_1h"] - ip["percentual_fcr_1h"]
-        fcr_text = f" O First Call Resolution (FCR 1h) variou {diff_fcr_pct:+.1f} p.p., registrando {ia['percentual_fcr_1h']:.1f}% no mês atual."
+        diff_fcr = safe_number(ia.get("fcr_1h", 0)) - safe_number(ip.get("fcr_1h", 0))
+        diff_fcr_pct = safe_number(ia.get("percentual_fcr_1h", 0)) - safe_number(ip.get("percentual_fcr_1h", 0))
+        fcr_text = f" O First Call Resolution (FCR 1h) variou {format_pct_points(diff_fcr_pct)}, registrando {format_raw_pct(ia.get('percentual_fcr_1h', 0))} no mês atual."
 
     # 5. Categorias que mais cresceram e reduziram
     cat_cresc = "Nenhuma"
@@ -147,31 +242,38 @@ def gerar_resumo_executivo(ind_atual, ind_anterior, label_mes_atual, label_mes_a
     
     if not comp_categoria.empty:
         comp_cat_c = comp_categoria.sort_values("Diferença", ascending=False)
-        if not comp_cat_c.empty and comp_cat_c.iloc[0]["Diferença"] > 0:
+        if not comp_cat_c.empty and safe_number(comp_cat_c.iloc[0]["Diferença"]) > 0:
             row_c = comp_cat_c.iloc[0]
-            cat_cresc = f"*{row_c['Categoria Principal']}* (+{row_c['Diferença']:.0f} chamados)"
+            cat_cresc = f"*{row_c['Categoria Principal']}* ({format_diff(row_c['Diferença'])} chamados)"
             
         comp_cat_r = comp_categoria.sort_values("Diferença", ascending=True)
-        if not comp_cat_r.empty and comp_cat_r.iloc[0]["Diferença"] < 0:
+        if not comp_cat_r.empty and safe_number(comp_cat_r.iloc[0]["Diferença"]) < 0:
             row_r = comp_cat_r.iloc[0]
-            cat_red = f"*{row_r['Categoria Principal']}* ({row_r['Diferença']:.0f} chamados)"
+            cat_red = f"*{row_r['Categoria Principal']}* ({format_diff(row_r['Diferença'])} chamados)"
 
     # 6. Clientes que mais cresceram em volume
     cli_cresc = "Nenhum"
     if not comp_cliente.empty:
         comp_cli_c = comp_cliente.sort_values("Diferença", ascending=False)
-        if not comp_cli_c.empty and comp_cli_c.iloc[0]["Diferença"] > 0:
+        if not comp_cli_c.empty and safe_number(comp_cli_c.iloc[0]["Diferença"]) > 0:
             row_cl = comp_cli_c.iloc[0]
-            cli_cresc = f"*{row_cl['Cliente']}* (+{row_cl['Diferença']:.0f} chamados)"
+            cli_cresc = f"*{row_cl['Cliente']}* ({format_diff(row_cl['Diferença'])} chamados)"
 
     # 7. Principal ponto de atenção
     ponto_atencao = "Não foram identificados desvios críticos."
-    if ia["fora_sla"] > ip["fora_sla"]:
-        ponto_atencao = f"Aumento no número de chamados fora do SLA, somando {ia['fora_sla']} chamados (+{ia['fora_sla'] - ip['fora_sla']}). A principal causa de SLA vencido foi a solicitação: *{ia['causa_sla_vencido']}*."
-    elif ia["em_aberto"] > ip["em_aberto"]:
-        ponto_atencao = f"Aumento no backlog em aberto, passando de {ip['em_aberto']} para {ia['em_aberto']} chamados. A principal causa de atraso operacional foi a solicitação: *{ia['causa_atraso']}*."
-    elif ia["acima_72h"] > ip["acima_72h"]:
-        ponto_atencao = f"Aumento no número de chamados resolvidos acima de 72 horas, somando {ia['acima_72h']} chamados. A principal causa de atraso foi a solicitação: *{ia['causa_atraso']}*."
+    fora_sla_at_val = safe_number(ia.get("fora_sla", 0))
+    fora_sla_ant_val = safe_number(ip.get("fora_sla", 0))
+    em_aberto_at_val = safe_number(ia.get("em_aberto", 0))
+    em_aberto_ant_val = safe_number(ip.get("em_aberto", 0))
+    acima_72h_at_val = safe_number(ia.get("acima_72h", 0))
+    acima_72h_ant_val = safe_number(ip.get("acima_72h", 0))
+
+    if fora_sla_at_val > fora_sla_ant_val:
+        ponto_atencao = f"Aumento no número de chamados fora do SLA, somando {format_int(fora_sla_at_val)} chamados ({format_diff(fora_sla_at_val - fora_sla_ant_val)}). A principal causa de SLA vencido foi a solicitação: *{ia.get('causa_sla_vencido', '-')}*."
+    elif em_aberto_at_val > em_aberto_ant_val:
+        ponto_atencao = f"Aumento no backlog em aberto, passando de {format_int(em_aberto_ant_val)} para {format_int(em_aberto_at_val)} chamados. A principal causa de atraso operacional foi a solicitação: *{ia.get('causa_atraso', '-')}*."
+    elif acima_72h_at_val > acima_72h_ant_val:
+        ponto_atencao = f"Aumento no número de chamados resolvidos acima de 72 horas, somando {format_int(acima_72h_at_val)} chamados. A principal causa de atraso foi a solicitação: *{ia.get('causa_atraso', '-')}*."
 
     texto = (
         f"Em relação a {label_mes_anterior}, {label_mes_atual} apresentou {vol_dir} no volume total de chamados{var_vol_text}."
@@ -189,50 +291,53 @@ def gerar_resumo_executivo(ind_atual, ind_anterior, label_mes_atual, label_mes_a
     
     # Volume de chamados
     if diff_vol < 0:
-        melhoras.append(f"Redução no volume de chamados: {diff_vol} chamados ({pct_vol:.1f}%)")
+        melhoras.append(f"Redução no volume de chamados: {format_diff(diff_vol)} chamados ({format_pct(pct_vol)})")
     elif diff_vol > 0:
-        # Aumento de chamados é uma piora/atenção
-        pioras.append(f"Aumento no volume de chamados: +{diff_vol} chamados (+{pct_vol:.1f}%)")
+        pioras.append(f"Aumento no volume de chamados: {format_diff(diff_vol)} chamados ({format_pct(pct_vol)})")
         
     # SLA %
     if diff_sla_pct > 0.5:
-        melhoras.append(f"Melhora na taxa de SLA dentro do prazo: +{diff_sla_pct:.1f} p.p. ({ia['percentual_dentro_sla']:.1f}%)")
+        melhoras.append(f"Melhora na taxa de SLA dentro do prazo: {format_pct_points(diff_sla_pct)} ({format_raw_pct(pct_sla_at)})")
     elif diff_sla_pct < -0.5:
-        pioras.append(f"Queda na taxa de SLA dentro do prazo: {diff_sla_pct:.1f} p.p. ({ia['percentual_dentro_sla']:.1f}%)")
+        pioras.append(f"Queda na taxa de SLA dentro do prazo: {format_pct_points(diff_sla_pct)} ({format_raw_pct(pct_sla_at)})")
         
     # Fora do SLA (quantidade)
     if diff_fora < 0:
-        melhoras.append(f"Redução de chamados fora do SLA: {diff_fora} chamados")
+        melhoras.append(f"Redução de chamados fora do SLA: {format_diff(diff_fora)} chamados")
     elif diff_fora > 0:
-        pioras.append(f"Aumento de chamados fora do SLA: +{diff_fora} chamados")
+        pioras.append(f"Aumento de chamados fora do SLA: {format_diff(diff_fora)} chamados")
         
     # 72h
     if diff_72h > 0:
-        melhoras.append(f"Aumento de chamados tratados em até 72h: +{diff_72h} chamados")
+        melhoras.append(f"Aumento de chamados tratados em até 72h: {format_diff(diff_72h)} chamados")
     elif diff_72h < 0:
-        pioras.append(f"Redução de chamados tratados em até 72h: {diff_72h} chamados")
+        pioras.append(f"Redução de chamados tratados em até 72h: {format_diff(diff_72h)} chamados")
         
     # Em aberto
     if diff_abertos < 0:
-        melhoras.append(f"Redução no estoque de chamados em aberto: {diff_abertos} chamados")
+        melhoras.append(f"Redução no estoque de chamados em aberto: {format_diff(diff_abertos)} chamados")
     elif diff_abertos > 0:
-        pioras.append(f"Aumento no backlog em aberto: +{diff_abertos} chamados")
+        pioras.append(f"Aumento no backlog em aberto: {format_diff(diff_abertos)} chamados")
 
     # FCR
     if fcr_disponivel:
         if diff_fcr_pct > 0.5:
-            melhoras.append(f"Melhora no FCR 1h: +{diff_fcr_pct:.1f} p.p. ({ia['percentual_fcr_1h']:.1f}%)")
+            melhoras.append(f"Melhora no FCR 1h: {format_pct_points(diff_fcr_pct)} ({format_raw_pct(ia.get('percentual_fcr_1h', 0))})")
         elif diff_fcr_pct < -0.5:
-            pioras.append(f"Queda no FCR 1h: {diff_fcr_pct:.1f} p.p. ({ia['percentual_fcr_1h']:.1f}%)")
+            pioras.append(f"Queda no FCR 1h: {format_pct_points(diff_fcr_pct)} ({format_raw_pct(ia.get('percentual_fcr_1h', 0))})")
         
     # Pontos de Atenção
-    if ia["fora_sla"] > 0:
-        atencoes.append(f"Total de {ia['fora_sla']} chamados estouraram o SLA no mês atual. Causa principal: *{ia['causa_sla_vencido']}*")
-    if ia["em_aberto"] > 0:
-        atencoes.append(f"Existem {ia['em_aberto']} chamados em aberto / em tratamento no mês atual")
-    if ia["acima_72h"] > 0:
-        atencoes.append(f"Total de {ia['acima_72h']} chamados finalizados após 72h. Causa principal: *{ia['causa_atraso']}*")
-    if fcr_disponivel and ia["percentual_fcr_1h"] < 70:
-        atencoes.append(f"FCR 1h abaixo da meta recomendada (70%): {ia['percentual_fcr_1h']:.1f}%")
+    fora_sla_at_int = safe_number(ia.get("fora_sla", 0))
+    em_aberto_at_int = safe_number(ia.get("em_aberto", 0))
+    acima_72h_at_int = safe_number(ia.get("acima_72h", 0))
+
+    if fora_sla_at_int > 0:
+        atencoes.append(f"Total de {format_int(fora_sla_at_int)} chamados estouraram o SLA no mês atual. Causa principal: *{ia.get('causa_sla_vencido', '-')}*")
+    if em_aberto_at_int > 0:
+        atencoes.append(f"Existem {format_int(em_aberto_at_int)} chamados em aberto / em tratamento no mês atual")
+    if acima_72h_at_int > 0:
+        atencoes.append(f"Total de {format_int(acima_72h_at_int)} chamados finalizados após 72h. Causa principal: *{ia.get('causa_atraso', '-')}*")
+    if fcr_disponivel and safe_number(ia.get("percentual_fcr_1h", 0)) < 70:
+        atencoes.append(f"FCR 1h abaixo da meta recomendada (70%): {format_raw_pct(ia.get('percentual_fcr_1h', 0))}")
 
     return texto, melhoras, pioras, atencoes

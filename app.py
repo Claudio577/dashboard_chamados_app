@@ -532,9 +532,17 @@ with tab_comp:
             comp_cli = comparar_frequencias(df_atual_filtered, df_anterior_filtered, "Cliente Análise", "Cliente")
             comp_sol = comparar_frequencias(df_atual_filtered, df_anterior_filtered, "Solicitação Específica", "Solicitação Específica")
 
-            resumo_exec_texto, melhoras, pioras, atencoes = gerar_resumo_executivo(
-                ind_atual, ind_anterior, label_mes_atual, label_mes_anterior, comp_cat, comp_cli, comp_sol
-            )
+            try:
+                resumo_exec_texto, melhoras, pioras, atencoes = gerar_resumo_executivo(
+                    ind_atual, ind_anterior, label_mes_atual, label_mes_anterior, comp_cat, comp_cli, comp_sol
+                )
+            except Exception as e:
+                st.warning("⚠️ Não foi possível gerar a análise textual automática da evolução devido a dados inconsistentes ou insuficientes para este recorte.")
+                resumo_exec_texto = "Não foi possível gerar o resumo executivo automaticamente para este recorte."
+                melhoras = []
+                pioras = []
+                atencoes = ["Verifique os dados de comparação mensal e os percentuais calculados."]
+
 
             st.markdown("---")
             st.markdown("### 🧠 Resumo Executivo da Evolução")
