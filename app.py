@@ -103,17 +103,13 @@ def montar_qualificacao(df, col_tipo, col_item, col_qualificacao, col_categoria)
     if col_categoria:
         return df[col_categoria].fillna("Não informado").astype(str).str.strip()
 
-    return pd.Series(["Não informado"] * len(df))
+    return pd.Series(["Não informado"] * len(df), index=df.index)
 
 
 def montar_dor_geral(df, col_tipo, col_categoria, col_qualificacao):
     """
     Maior dor geral = grupo principal da solicitação.
-
-    Preferência:
-    1. Tipo
-    2. Categoria
-    3. Qualificação
+    Preferência: Tipo > Categoria > Qualificação.
     """
     if col_tipo:
         return df[col_tipo].fillna("Não informado").astype(str).str.strip()
@@ -124,7 +120,7 @@ def montar_dor_geral(df, col_tipo, col_categoria, col_qualificacao):
     if col_qualificacao:
         return df[col_qualificacao].fillna("Não informado").astype(str).str.strip()
 
-    return pd.Series(["Não informado"] * len(df))
+    return pd.Series(["Não informado"] * len(df), index=df.index)
 
 
 def resumo_top(df, coluna, nome_coluna, filtro=None, top=10):
@@ -245,7 +241,7 @@ def gerar_excel_dashboard(
 
         for (titulo, valor), pos in zip(cards, posicoes):
             worksheet.merge_range(f"{pos[0]}:{pos[1]}", titulo, fmt_card)
-            worksheet.merge_range(f"{pos[2]}}:{pos[3]}", valor, fmt_card_valor)
+            worksheet.merge_range(f"{pos[2]}:{pos[3]}", valor, fmt_card_valor)
 
         worksheet.merge_range("B11:E11", "Empresa com mais chamados", fmt_secao)
         worksheet.merge_range("B12:E12", indicadores["empresa_top"], fmt_cell)
