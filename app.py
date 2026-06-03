@@ -1,1135 +1,1126 @@
-import io
-import re
-import unicodedata
-
-import pandas as pd
-import plotly.express as px
 import streamlit as st
+import pandas as pd
+import numpy as np
+import datetime
+from utils.data_processing import (
+    tratar_planilha,
+    calcular_indicadores,
+    obter_tabela_responsaveis,
+    comparar_frequencias,
+    montar_comparativo_indicadores,
+    calcular_variacao_percentual
+)
+from utils.ui_components import render_header, metric_card, highlight_block, comparative_metric_card
+from utils.charts import (
+    plot_donut_chart,
+    plot_horizontal_bar,
+    plot_grouped_bar_comparison,
+    plot_grouped_status_comparison,
+    plot_stacked_bar_status,
+    plot_simple_vertical_bar,
+    plot_historical_line,
+    plot_historical_bar,
+    COLOR_MAP_SLA,
+    COLOR_MAP_72H,
+    COLOR_MAP_FCR
+)
+from utils.comparison import (
+    detectar_mes_arquivo,
+    gerar_label_mes,
+    gerar_periodo_ordem,
+    gerar_resumo_executivo
+)
+from utils.export_excel import gerar_excel_resultado
 
-
+# Configuração da página do Streamlit
 st.set_page_config(
-    page_title="Dashboard de Chamados",
+    page_title="Dashboard Executivo de Chamados",
     page_icon="📊",
     layout="wide",
 )
 
+# Constantes de ordenação
+ORDEM_SLA = ["Dentro do SLA", "Fora do SLA", "SLA não informado", "Em aberto / Em tratamento"]
+ORDEM_72H = ["Tratado até 72h", "Tratado acima de 72h", "72h não informado", "Em aberto / Em tratamento"]
 
-# =========================
-# CONSTANTES
-# =========================
-
-ORDEM_MESES = ["Mês anterior", "Mês atual"]
-ORDEM_SLA = ["Dentro do SLA", "Fora do SLA", "Em aberto / Em tratamento"]
-ORDEM_72H = ["Tratado até 72h", "Tratado acima de 72h", "Em aberto / Em tratamento"]
-ORDEM_FCR_1H = ["Resolvido até 1h", "Resolvido acima de 1h", "Em aberto / Em tratamento"]
+@st.cache_data
+def carregar_e_tratar_base(uploaded_file, nome_base):
+    return tratar_planilha(uploaded_file, nome_base)
 
 
 # =========================
-# FUNÇÕES AUXILIARES
+# BARRA LATERAL (UPLOADER E FILTROS GLOBAIS)
 # =========================
-
-def normalizar_texto(texto):
-    texto = str(texto).strip().lower()
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join([c for c in texto if not unicodedata.combining(c)])
-    texto = re.sub(r"[^a-z0-9]+", " ", texto)
-    return texto.strip()
-
-
-def limpar_texto(texto):
-    if pd.isna(texto):
-        return "Não informado"
-    texto = str(texto).strip()
-    texto = re.sub(r"\s+", " ", texto)
-    return texto if texto else "Não informado"
-
-
-def encontrar_coluna(df, opcoes):
-    colunas_norm = {col: normalizar_texto(col) for col in df.columns}
-
-    for opcao in opcoes:
-        opcao_norm = normalizar_texto(opcao)
-        for col, col_norm in colunas_norm.items():
-            if opcao_norm == col_norm:
-                return col
-
-    for opcao in opcoes:
-        opcao_norm = normalizar_texto(opcao)
-        for col, col_norm in colunas_norm.items():
-            if opcao_norm in col_norm:
-                return col
-
-    return None
-
-
-def ler_arquivo(uploaded_file):
-    nome = uploaded_file.name.lower()
-
-    if nome.endswith(".csv"):
-        try:
-            return pd.read_csv(uploaded_file, sep=None, engine="python", encoding="utf-8")
-        except Exception:
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, sep=None, engine="python", encoding="latin1")
-
-    if nome.endswith(".xls"):
-        return pd.read_excel(uploaded_file, engine="xlrd")
-
-    return pd.read_excel(uploaded_file)
-
-
-def preparar_datas(df, coluna):
-    df[coluna] = pd.to_datetime(df[coluna], errors="coerce", dayfirst=True)
-    return df
-
-
-def montar_empresa_analise(row, col_empresa, col_de):
-    empresa = limpar_texto(row[col_empresa])
-    de = limpar_texto(row[col_de]) if col_de else ""
-
-    empresa_norm = normalizar_texto(empresa)
-    de_norm = normalizar_texto(de)
-
-    if "cbloc" in de_norm:
-        return "CBLOC BRASIL LOCAÇÃO DE EQUIPAMENTOS LTDA"
-
-    if "cbloc" in empresa_norm and "casa do construtor" in de_norm:
-        return "CASA DO CONSTRUTOR"
-
-    return empresa
-
-
-def montar_solicitacao_especifica(df, col_tipo, col_item, col_qualificacao, col_categoria):
-    if col_tipo and col_item:
-        return (
-            df[col_tipo].fillna("Não informado").astype(str).str.strip()
-            + " - "
-            + df[col_item].fillna("Não informado").astype(str).str.strip()
-        )
-
-    if col_qualificacao:
-        return df[col_qualificacao].fillna("Não informado").astype(str).str.strip()
-
-    if col_categoria:
-        return df[col_categoria].fillna("Não informado").astype(str).str.strip()
-
-    return pd.Series(["Não informado"] * len(df), index=df.index)
-
-
-def montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao):
-    if col_tipo:
-        return df[col_tipo].fillna("Não informado").astype(str).str.strip()
-
-    if col_categoria:
-        return df[col_categoria].fillna("Não informado").astype(str).str.strip()
-
-    if col_qualificacao:
-        return df[col_qualificacao].fillna("Não informado").astype(str).str.strip()
-
-    return pd.Series(["Não informado"] * len(df), index=df.index)
-
-
-def resumo_top(df, coluna, nome_coluna, filtro=None, top=50):
-    base = df.copy()
-
-    if filtro is not None:
-        base = base[filtro]
-
-    if base.empty:
-        return pd.DataFrame(columns=[nome_coluna, "Chamados"])
-
-    return (
-        base.groupby(coluna)
-        .size()
-        .reset_index(name="Chamados")
-        .rename(columns={coluna: nome_coluna})
-        .sort_values("Chamados", ascending=False)
-        .head(top)
-    )
-
-
-def resumo_por_status(df, coluna_status, ordem):
-    contagem = df[coluna_status].value_counts().reindex(ordem, fill_value=0)
-    return pd.DataFrame({coluna_status: contagem.index, "Chamados": contagem.values})
-
-
-def calcular_variacao_percentual(valor_atual, valor_anterior):
-    try:
-        valor_atual = float(valor_atual)
-        valor_anterior = float(valor_anterior)
-    except Exception:
-        return None
-
-    if valor_anterior == 0:
-        if valor_atual == 0:
-            return 0.0
-        return None
-
-    return ((valor_atual - valor_anterior) / valor_anterior) * 100
-
-
-def formatar_variacao(valor):
-    if valor is None or pd.isna(valor):
-        return "sem base anterior"
-
-    sinal = "+" if valor > 0 else ""
-    return f"{sinal}{valor:.1f}%"
-
-
-def formatar_diferenca(valor):
-    sinal = "+" if valor > 0 else ""
-    return f"{sinal}{valor:.0f}"
-
-
-def montar_frase_variacao(nome, anterior, atual):
-    diferenca = atual - anterior
-    variacao = calcular_variacao_percentual(atual, anterior)
-
-    if diferenca > 0:
-        movimento = "aumentou"
-    elif diferenca < 0:
-        movimento = "reduziu"
-    else:
-        movimento = "ficou igual"
-
-    return (
-        f"**{nome}:** {movimento} de **{anterior:.0f}** para **{atual:.0f}** "
-        f"({formatar_diferenca(diferenca)} | {formatar_variacao(variacao)})."
-    )
-
-
-def preparar_dataframe_exibicao_percentual(df):
-    df_exibir = df.copy()
-    if "Variação %" in df_exibir.columns:
-        df_exibir["Variação %"] = df_exibir["Variação %"].apply(formatar_variacao)
-    return df_exibir
-
-
-def processar_base(arquivo, nome_base):
-    df = ler_arquivo(arquivo)
-
-    col_empresa = encontrar_coluna(df, ["Empresa", "Cliente", "Nome Fantasia", "Razão Social", "Razao Social"])
-    col_de = encontrar_coluna(df, ["De", "Solicitante", "Aberto por", "Cliente Solicitante"])
-    col_abertura = encontrar_coluna(df, ["Abertura", "Data Abertura", "Data de Abertura", "Criado em", "Data de Criação"])
-    col_encerramento = encontrar_coluna(df, ["Encerramento", "Data Encerramento", "Data de Encerramento", "Fechado em", "Resolvido em"])
-    col_vencimento = encontrar_coluna(df, ["Vencimento", "Data Vencimento", "SLA", "Prazo", "Data SLA"])
-    col_tipo = encontrar_coluna(df, ["Tipo"])
-    col_item = encontrar_coluna(df, ["Item"])
-    col_qualificacao = encontrar_coluna(df, ["Qualificação", "Qualificacao", "Classificação", "Classificacao"])
-    col_categoria = encontrar_coluna(df, ["Categoria", "Assunto", "Serviço", "Servico"])
-    col_status = encontrar_coluna(df, ["Status", "Situação", "Situacao"])
-    col_responsavel = encontrar_coluna(df, ["Responsável", "Responsavel", "Atendente", "Analista"])
-    col_numero = encontrar_coluna(df, ["N", "Número", "Numero", "Chamado", "Ticket"])
-
-    colunas_obrigatorias = {
-        "Empresa": col_empresa,
-        "Abertura": col_abertura,
-        "Encerramento": col_encerramento,
-        "Vencimento": col_vencimento,
-    }
-
-    faltando = [nome for nome, coluna in colunas_obrigatorias.items() if coluna is None]
-
-    if faltando:
-        raise ValueError(
-            f"Na base {nome_base}, não consegui identificar estas colunas: {faltando}. "
-            f"Colunas encontradas: {list(df.columns)}"
-        )
-
-    df = preparar_datas(df, col_abertura)
-    df = preparar_datas(df, col_encerramento)
-    df = preparar_datas(df, col_vencimento)
-
-    df["Cliente Análise"] = df.apply(lambda row: montar_empresa_analise(row, col_empresa, col_de), axis=1)
-
-    df["Categoria Principal"] = montar_categoria_principal(df, col_tipo, col_categoria, col_qualificacao)
-    df["Categoria Principal"] = df["Categoria Principal"].fillna("Não informado").astype(str).str.strip()
-
-    df["Solicitação Específica"] = montar_solicitacao_especifica(df, col_tipo, col_item, col_qualificacao, col_categoria)
-    df["Solicitação Específica"] = df["Solicitação Específica"].fillna("Não informado").astype(str).str.strip()
-
-    total_chamados = len(df)
-    total_empresas = df["Cliente Análise"].nunique()
-
-    # =========================
-    # SLA
-    # =========================
-    df["Status SLA"] = "Em aberto / Em tratamento"
-    mask_fechado_com_prazo = df[col_encerramento].notna() & df[col_vencimento].notna()
-
-    df.loc[
-        mask_fechado_com_prazo & (df[col_encerramento] <= df[col_vencimento]),
-        "Status SLA",
-    ] = "Dentro do SLA"
-
-    df.loc[
-        mask_fechado_com_prazo & (df[col_encerramento] > df[col_vencimento]),
-        "Status SLA",
-    ] = "Fora do SLA"
-
-    sla_tratado = int(mask_fechado_com_prazo.sum())
-    dentro_sla = int((df["Status SLA"] == "Dentro do SLA").sum())
-    fora_sla = int((df["Status SLA"] == "Fora do SLA").sum())
-    em_aberto = int((df["Status SLA"] == "Em aberto / Em tratamento").sum())
-    percentual_dentro_sla = (dentro_sla / sla_tratado * 100) if sla_tratado > 0 else 0
-
-    # =========================
-    # TRATAMENTO EM 72 HORAS
-    # =========================
-    df["Horas para tratamento"] = None
-    mask_fechado_com_abertura = df[col_abertura].notna() & df[col_encerramento].notna()
-
-    df.loc[mask_fechado_com_abertura, "Horas para tratamento"] = (
-        (
-            df.loc[mask_fechado_com_abertura, col_encerramento]
-            - df.loc[mask_fechado_com_abertura, col_abertura]
-        ).dt.total_seconds() / 3600
-    )
-
-    df["Status 72h"] = "Em aberto / Em tratamento"
-
-    df.loc[
-        mask_fechado_com_abertura & (df["Horas para tratamento"] <= 72),
-        "Status 72h",
-    ] = "Tratado até 72h"
-
-    df.loc[
-        mask_fechado_com_abertura & (df["Horas para tratamento"] > 72),
-        "Status 72h",
-    ] = "Tratado acima de 72h"
-
-    ate_72h = int((df["Status 72h"] == "Tratado até 72h").sum())
-    acima_72h = int((df["Status 72h"] == "Tratado acima de 72h").sum())
-    nao_72h = int((df["Status 72h"] != "Tratado até 72h").sum())
-
-    # =========================
-    # FIRST CALL RESOLUTION 1 HORA
-    # Definição usada: chamados encerrados em até 1 hora entre abertura e encerramento.
-    # =========================
-    df["Status FCR 1h"] = "Em aberto / Em tratamento"
-
-    df.loc[
-        mask_fechado_com_abertura & (df["Horas para tratamento"] <= 1),
-        "Status FCR 1h",
-    ] = "Resolvido até 1h"
-
-    df.loc[
-        mask_fechado_com_abertura & (df["Horas para tratamento"] > 1),
-        "Status FCR 1h",
-    ] = "Resolvido acima de 1h"
-
-    fcr_tratado = int(mask_fechado_com_abertura.sum())
-    fcr_1h = int((df["Status FCR 1h"] == "Resolvido até 1h").sum())
-    acima_1h = int((df["Status FCR 1h"] == "Resolvido acima de 1h").sum())
-    percentual_fcr_1h = (fcr_1h / fcr_tratado * 100) if fcr_tratado > 0 else 0
-
-    resumo_clientes = resumo_top(df, "Cliente Análise", "Cliente", top=50)
-    resumo_categorias = resumo_top(df, "Categoria Principal", "Categoria Principal", top=50)
-    resumo_solicitacoes = resumo_top(df, "Solicitação Específica", "Solicitação Específica", top=50)
-
-    resumo_sla = resumo_por_status(df, "Status SLA", ORDEM_SLA)
-    resumo_72h = resumo_por_status(df, "Status 72h", ORDEM_72H)
-    resumo_fcr_1h = resumo_por_status(df, "Status FCR 1h", ORDEM_FCR_1H)
-
-    resumo_causa_sla_vencido = resumo_top(
-        df,
-        "Solicitação Específica",
-        "Causa de SLA vencido",
-        filtro=(df["Status SLA"] == "Fora do SLA"),
-        top=10,
-    )
-
-    resumo_causa_atraso = resumo_top(
-        df,
-        "Solicitação Específica",
-        "Causa de atraso operacional",
-        filtro=(df["Status 72h"] != "Tratado até 72h"),
-        top=10,
-    )
-
-    cliente_top = resumo_clientes.iloc[0]["Cliente"] if not resumo_clientes.empty else "-"
-    cliente_top_qtd = int(resumo_clientes.iloc[0]["Chamados"]) if not resumo_clientes.empty else 0
-
-    categoria_top = resumo_categorias.iloc[0]["Categoria Principal"] if not resumo_categorias.empty else "-"
-    categoria_top_qtd = int(resumo_categorias.iloc[0]["Chamados"]) if not resumo_categorias.empty else 0
-
-    solicitacao_top = resumo_solicitacoes.iloc[0]["Solicitação Específica"] if not resumo_solicitacoes.empty else "-"
-    solicitacao_top_qtd = int(resumo_solicitacoes.iloc[0]["Chamados"]) if not resumo_solicitacoes.empty else 0
-
-    causa_sla_vencido = resumo_causa_sla_vencido.iloc[0]["Causa de SLA vencido"] if not resumo_causa_sla_vencido.empty else "-"
-    causa_sla_vencido_qtd = int(resumo_causa_sla_vencido.iloc[0]["Chamados"]) if not resumo_causa_sla_vencido.empty else 0
-
-    causa_atraso = resumo_causa_atraso.iloc[0]["Causa de atraso operacional"] if not resumo_causa_atraso.empty else "-"
-    causa_atraso_qtd = int(resumo_causa_atraso.iloc[0]["Chamados"]) if not resumo_causa_atraso.empty else 0
-
-    indicadores = {
-        "total_chamados": total_chamados,
-        "total_empresas": total_empresas,
-        "sla_tratado": sla_tratado,
-        "dentro_sla": dentro_sla,
-        "fora_sla": fora_sla,
-        "em_aberto": em_aberto,
-        "percentual_dentro_sla": percentual_dentro_sla,
-        "ate_72h": ate_72h,
-        "acima_72h": acima_72h,
-        "nao_72h": nao_72h,
-        "fcr_tratado": fcr_tratado,
-        "fcr_1h": fcr_1h,
-        "acima_1h": acima_1h,
-        "percentual_fcr_1h": percentual_fcr_1h,
-        "cliente_top": cliente_top,
-        "cliente_top_qtd": cliente_top_qtd,
-        "categoria_top": categoria_top,
-        "categoria_top_qtd": categoria_top_qtd,
-        "solicitacao_top": solicitacao_top,
-        "solicitacao_top_qtd": solicitacao_top_qtd,
-        "causa_sla_vencido": causa_sla_vencido,
-        "causa_sla_vencido_qtd": causa_sla_vencido_qtd,
-        "causa_atraso": causa_atraso,
-        "causa_atraso_qtd": causa_atraso_qtd,
-    }
-
-    colunas_abertos = []
-
-    for c in [
-        col_numero,
-        col_abertura,
-        col_empresa,
-        col_de,
-        col_responsavel,
-        col_tipo,
-        col_item,
-        col_vencimento,
-        col_encerramento,
-        col_status,
-        col_categoria,
-    ]:
-        if c and c not in colunas_abertos:
-            colunas_abertos.append(c)
-
-    chamados_abertos = df.loc[df["Status SLA"] == "Em aberto / Em tratamento", colunas_abertos].copy()
-
-    return {
-        "nome_base": nome_base,
-        "df": df,
-        "indicadores": indicadores,
-        "resumo_clientes": resumo_clientes,
-        "resumo_categorias": resumo_categorias,
-        "resumo_solicitacoes": resumo_solicitacoes,
-        "resumo_sla": resumo_sla,
-        "resumo_72h": resumo_72h,
-        "resumo_fcr_1h": resumo_fcr_1h,
-        "resumo_causa_sla_vencido": resumo_causa_sla_vencido,
-        "resumo_causa_atraso": resumo_causa_atraso,
-        "chamados_abertos": chamados_abertos,
-    }
-
-
-def comparar_resumos(resumo_atual, resumo_anterior, coluna):
-    anterior = resumo_anterior[[coluna, "Chamados"]].rename(columns={"Chamados": "Mês anterior"})
-    atual = resumo_atual[[coluna, "Chamados"]].rename(columns={"Chamados": "Mês atual"})
-
-    comparativo = anterior.merge(atual, on=coluna, how="outer")
-    comparativo["Mês anterior"] = comparativo["Mês anterior"].fillna(0).astype(int)
-    comparativo["Mês atual"] = comparativo["Mês atual"].fillna(0).astype(int)
-    comparativo["Diferença"] = comparativo["Mês atual"] - comparativo["Mês anterior"]
-    comparativo["Variação %"] = comparativo.apply(
-        lambda row: calcular_variacao_percentual(row["Mês atual"], row["Mês anterior"]),
-        axis=1,
-    )
-
-    return comparativo.sort_values("Mês atual", ascending=False)
-
-
-def montar_comparativo_indicadores(atual, anterior):
-    ia = atual["indicadores"]
-    ip = anterior["indicadores"]
-
-    linhas = [
-        ("Total de chamados", ip["total_chamados"], ia["total_chamados"]),
-        ("Empresas com chamados", ip["total_empresas"], ia["total_empresas"]),
-        ("SLA tratado", ip["sla_tratado"], ia["sla_tratado"]),
-        ("Dentro do SLA", ip["dentro_sla"], ia["dentro_sla"]),
-        ("Fora do SLA", ip["fora_sla"], ia["fora_sla"]),
-        ("Em aberto / Em tratamento", ip["em_aberto"], ia["em_aberto"]),
-        ("Tratados até 72h", ip["ate_72h"], ia["ate_72h"]),
-        ("Tratados acima de 72h", ip["acima_72h"], ia["acima_72h"]),
-        ("Acima de 72h / abertos", ip["nao_72h"], ia["nao_72h"]),
-        ("FCR tratado", ip["fcr_tratado"], ia["fcr_tratado"]),
-        ("First Call Resolution até 1h", ip["fcr_1h"], ia["fcr_1h"]),
-        ("Resolvidos acima de 1h", ip["acima_1h"], ia["acima_1h"]),
-        ("% dentro SLA", ip["percentual_dentro_sla"], ia["percentual_dentro_sla"]),
-        ("% FCR 1h", ip["percentual_fcr_1h"], ia["percentual_fcr_1h"]),
-    ]
-
-    df_comp = pd.DataFrame(linhas, columns=["Indicador", "Mês anterior", "Mês atual"])
-    df_comp["Diferença"] = df_comp["Mês atual"] - df_comp["Mês anterior"]
-    df_comp["Variação %"] = df_comp.apply(
-        lambda row: calcular_variacao_percentual(row["Mês atual"], row["Mês anterior"]),
-        axis=1,
-    )
-
-    return df_comp
-
-
-def montar_status_comparativo(atual, anterior, chave_resumo, coluna_status):
-    df_anterior = anterior[chave_resumo][[coluna_status, "Chamados"]].copy()
-    df_anterior["Mês"] = "Mês anterior"
-
-    df_atual = atual[chave_resumo][[coluna_status, "Chamados"]].copy()
-    df_atual["Mês"] = "Mês atual"
-
-    return pd.concat([df_anterior, df_atual], ignore_index=True)
-
-
-def gerar_excel_resultado(atual, anterior=None):
-    output = io.BytesIO()
-
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        indicadores_atual = pd.DataFrame(
-            list(atual["indicadores"].items()),
-            columns=["Indicador", "Valor"]
-        )
-
-        indicadores_atual.to_excel(writer, sheet_name="Resumo_Atual", index=False)
-        atual["resumo_clientes"].to_excel(writer, sheet_name="Clientes_Atual", index=False)
-        atual["resumo_categorias"].to_excel(writer, sheet_name="Categorias_Atual", index=False)
-        atual["resumo_solicitacoes"].to_excel(writer, sheet_name="Solicitacoes_Atual", index=False)
-        atual["resumo_sla"].to_excel(writer, sheet_name="SLA_Atual", index=False)
-        atual["resumo_72h"].to_excel(writer, sheet_name="72h_Atual", index=False)
-        atual["resumo_fcr_1h"].to_excel(writer, sheet_name="FCR_1h_Atual", index=False)
-        atual["resumo_causa_sla_vencido"].to_excel(writer, sheet_name="Causa_SLA_Atual", index=False)
-        atual["resumo_causa_atraso"].to_excel(writer, sheet_name="Causa_Atraso_Atual", index=False)
-        atual["chamados_abertos"].to_excel(writer, sheet_name="Abertos_Atual", index=False)
-
-        if anterior is not None:
-            indicadores_anterior = pd.DataFrame(
-                list(anterior["indicadores"].items()),
-                columns=["Indicador", "Valor"]
-            )
-
-            comp_indicadores = montar_comparativo_indicadores(atual, anterior)
-            comp_clientes = comparar_resumos(atual["resumo_clientes"], anterior["resumo_clientes"], "Cliente")
-            comp_categorias = comparar_resumos(atual["resumo_categorias"], anterior["resumo_categorias"], "Categoria Principal")
-            comp_solicitacoes = comparar_resumos(atual["resumo_solicitacoes"], anterior["resumo_solicitacoes"], "Solicitação Específica")
-
-            indicadores_anterior.to_excel(writer, sheet_name="Resumo_Anterior", index=False)
-            comp_indicadores.to_excel(writer, sheet_name="Comparativo_Geral", index=False)
-            comp_clientes.to_excel(writer, sheet_name="Comp_Clientes", index=False)
-            comp_categorias.to_excel(writer, sheet_name="Comp_Categorias", index=False)
-            comp_solicitacoes.to_excel(writer, sheet_name="Comp_Solicitacoes", index=False)
-
-    output.seek(0)
-    return output
-
-
-def render_dashboard(resultado):
-    indicadores = resultado["indicadores"]
-
-    st.subheader("Dashboard atualizado")
-
-    with st.expander("Entenda os indicadores"):
-        st.markdown("""
-        **Cliente com maior volume de chamados:** mostra qual empresa/cliente abriu mais chamados no mês.
-
-        **Categoria principal com maior volume:** mostra o grupo principal que mais gerou chamados. Normalmente vem da coluna **Tipo**. Exemplo: *DeskPhone JRC Computador*.
-
-        **Solicitação específica mais recorrente:** mostra o detalhe mais repetido, juntando **Tipo + Item**. Exemplo: *DeskPhone JRC Computador - Configuração*.
-
-        **Principal causa de SLA vencido:** mostra a solicitação específica que mais ficou fora do prazo de SLA.
-
-        **Principal causa de atraso operacional:** mostra a solicitação específica que mais passou de 72 horas ou ficou em aberto/em tratamento.
-
-        **Em aberto / Em tratamento:** chamados que ainda não possuem data de encerramento na planilha.
-
-        **First Call Resolution até 1h:** chamados encerrados em até 1 hora entre a abertura e o encerramento. Neste dashboard, usamos essa regra porque a planilha traz datas de abertura e encerramento.
-        """)
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total de chamados", indicadores["total_chamados"])
-    k2.metric("Empresas com chamados", indicadores["total_empresas"])
-    k3.metric("SLA tratado", indicadores["sla_tratado"])
-    k4.metric("% dentro SLA", f"{indicadores['percentual_dentro_sla']:.1f}%")
-
-    k5, k6, k7, k8 = st.columns(4)
-    k5.metric("Dentro do SLA", indicadores["dentro_sla"])
-    k6.metric("Fora do SLA", indicadores["fora_sla"])
-    k7.metric("Em aberto / Em tratamento", indicadores["em_aberto"])
-    k8.metric("Tratados até 72h", indicadores["ate_72h"])
-
-    k9, k10, k11, k12 = st.columns(4)
-    k9.metric("Tratados acima de 72h", indicadores["acima_72h"])
-    k10.metric("Acima de 72h / abertos", indicadores["nao_72h"])
-    k11.metric("First Call Resolution até 1h", indicadores["fcr_1h"])
-    k12.metric("% FCR 1h", f"{indicadores['percentual_fcr_1h']:.1f}%")
-
-    k13, k14 = st.columns(2)
-    k13.metric("Causa de SLA vencido", indicadores["causa_sla_vencido_qtd"])
-    k14.metric("Causa de atraso", indicadores["causa_atraso_qtd"])
-
-    st.info(f"Cliente com maior volume de chamados: **{indicadores['cliente_top']}** — {indicadores['cliente_top_qtd']} chamados.")
-    st.info(f"Categoria principal com maior volume: **{indicadores['categoria_top']}** — {indicadores['categoria_top_qtd']} chamados.")
-    st.info(f"Solicitação específica mais recorrente: **{indicadores['solicitacao_top']}** — {indicadores['solicitacao_top_qtd']} chamados.")
-
-    g1, g2 = st.columns(2)
-
-    with g1:
-        st.write("### Tratamento em 72 horas")
-        fig_72h = px.pie(
-            resultado["resumo_72h"],
-            names="Status 72h",
-            values="Chamados",
-            hole=0.35,
-            title="Tratados até 72h x acima de 72h x abertos",
-            category_orders={"Status 72h": ORDEM_72H},
-        )
-        st.plotly_chart(fig_72h, use_container_width=True)
-
-    with g2:
-        st.write("### SLA")
-        fig_sla = px.bar(
-            resultado["resumo_sla"],
-            x="Status SLA",
-            y="Chamados",
-            text="Chamados",
-            title="Resumo SLA",
-            category_orders={"Status SLA": ORDEM_SLA},
-        )
-        st.plotly_chart(fig_sla, use_container_width=True)
-
-    g_fcr1, g_fcr2 = st.columns(2)
-
-    with g_fcr1:
-        st.write("### First Call Resolution de 1 hora")
-        fig_fcr = px.bar(
-            resultado["resumo_fcr_1h"],
-            x="Status FCR 1h",
-            y="Chamados",
-            text="Chamados",
-            title="Resolvidos até 1h x acima de 1h x abertos",
-            category_orders={"Status FCR 1h": ORDEM_FCR_1H},
-        )
-        st.plotly_chart(fig_fcr, use_container_width=True)
-
-    with g_fcr2:
-        st.write("### Resumo FCR 1h")
-        st.dataframe(resultado["resumo_fcr_1h"], use_container_width=True)
-
-    g3, g4 = st.columns(2)
-
-    with g3:
-        st.write("### Clientes por volume de chamados")
-        fig_clientes = px.bar(
-            resultado["resumo_clientes"].head(10),
-            x="Chamados",
-            y="Cliente",
-            orientation="h",
-            text="Chamados",
-            title="Clientes com mais chamados",
-        )
-        fig_clientes.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_clientes, use_container_width=True)
-
-    with g4:
-        st.write("### Categorias principais por volume")
-        fig_categoria = px.bar(
-            resultado["resumo_categorias"].head(10),
-            x="Chamados",
-            y="Categoria Principal",
-            orientation="h",
-            text="Chamados",
-            title="Categorias principais com mais chamados",
-        )
-        fig_categoria.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_categoria, use_container_width=True)
-
-    g5, g6 = st.columns(2)
-
-    with g5:
-        st.write("### Solicitações específicas recorrentes")
-        fig_solicitacoes = px.bar(
-            resultado["resumo_solicitacoes"].head(10),
-            x="Chamados",
-            y="Solicitação Específica",
-            orientation="h",
-            text="Chamados",
-            title="Solicitações específicas mais recorrentes",
-        )
-        fig_solicitacoes.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_solicitacoes, use_container_width=True)
-
-    with g6:
-        st.write("### Causas de SLA vencido")
-        if resultado["resumo_causa_sla_vencido"].empty:
-            st.info("Nenhum chamado fora do SLA.")
-        else:
-            fig_causa_sla = px.bar(
-                resultado["resumo_causa_sla_vencido"],
-                x="Chamados",
-                y="Causa de SLA vencido",
-                orientation="h",
-                text="Chamados",
-                title="Solicitações que mais ficaram fora do SLA",
-            )
-            fig_causa_sla.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig_causa_sla, use_container_width=True)
-
-    st.write("### Causas de atraso operacional")
-    if resultado["resumo_causa_atraso"].empty:
-        st.info("Nenhum chamado acima de 72h ou aberto.")
-    else:
-        fig_causa_atraso = px.bar(
-            resultado["resumo_causa_atraso"],
-            x="Chamados",
-            y="Causa de atraso operacional",
-            orientation="h",
-            text="Chamados",
-            title="Solicitações acima de 72h ou em aberto/em tratamento",
-        )
-        fig_causa_atraso.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig_causa_atraso, use_container_width=True)
-
-    st.subheader("Tabelas de conferência")
-
-    t1, t2 = st.columns(2)
-
-    with t1:
-        st.write("Clientes")
-        st.dataframe(resultado["resumo_clientes"], use_container_width=True)
-
-    with t2:
-        st.write("Categorias principais")
-        st.dataframe(resultado["resumo_categorias"], use_container_width=True)
-
-    t3, t4 = st.columns(2)
-
-    with t3:
-        st.write("SLA")
-        st.dataframe(resultado["resumo_sla"], use_container_width=True)
-
-    with t4:
-        st.write("First Call Resolution 1h")
-        st.dataframe(resultado["resumo_fcr_1h"], use_container_width=True)
-
-    st.write("Solicitações específicas")
-    st.dataframe(resultado["resumo_solicitacoes"], use_container_width=True)
-
-    with st.expander("Ver os chamados em aberto / Em tratamento"):
-        st.dataframe(resultado["chamados_abertos"], use_container_width=True)
-
-    st.subheader("Conferência dos totais")
-
-    total_resumo_72h = int(resultado["resumo_72h"]["Chamados"].sum())
-    total_resumo_sla = int(resultado["resumo_sla"]["Chamados"].sum())
-    total_resumo_fcr_1h = int(resultado["resumo_fcr_1h"]["Chamados"].sum())
-    total_chamados = indicadores["total_chamados"]
-
-    if total_resumo_72h == total_chamados:
-        st.success(f"Resumo 72h está batendo: {total_resumo_72h} chamados.")
-    else:
-        st.error(f"Resumo 72h não está batendo. Base: {total_chamados} | Resumo: {total_resumo_72h}")
-
-    if total_resumo_sla == total_chamados:
-        st.success(f"Resumo SLA está batendo: {total_resumo_sla} chamados.")
-    else:
-        st.error(f"Resumo SLA não está batendo. Base: {total_chamados} | Resumo: {total_resumo_sla}")
-
-    if total_resumo_fcr_1h == total_chamados:
-        st.success(f"Resumo FCR 1h está batendo: {total_resumo_fcr_1h} chamados.")
-    else:
-        st.error(f"Resumo FCR 1h não está batendo. Base: {total_chamados} | Resumo: {total_resumo_fcr_1h}")
-
-
-def render_resumo_evolucao(atual, anterior, comp_categorias, comp_clientes, comp_solicitacoes):
-    ia = atual["indicadores"]
-    ip = anterior["indicadores"]
-
-    st.write("### Resumo da evolução entre os meses")
-
-    st.markdown(
-        f"""
-        - {montar_frase_variacao("Total de chamados", ip["total_chamados"], ia["total_chamados"])}
-        - {montar_frase_variacao("Chamados dentro do SLA", ip["dentro_sla"], ia["dentro_sla"])}
-        - {montar_frase_variacao("Chamados fora do SLA", ip["fora_sla"], ia["fora_sla"])}
-        - {montar_frase_variacao("Chamados em aberto / em tratamento", ip["em_aberto"], ia["em_aberto"])}
-        - {montar_frase_variacao("Tratados até 72h", ip["ate_72h"], ia["ate_72h"])}
-        - {montar_frase_variacao("Tratados acima de 72h", ip["acima_72h"], ia["acima_72h"])}
-        - {montar_frase_variacao("First Call Resolution até 1h", ip["fcr_1h"], ia["fcr_1h"])}
-        """
-    )
-
-    diferenca_sla_pp = ia["percentual_dentro_sla"] - ip["percentual_dentro_sla"]
-    diferenca_fcr_pp = ia["percentual_fcr_1h"] - ip["percentual_fcr_1h"]
-
-    st.info(
-        f"% dentro do SLA saiu de **{ip['percentual_dentro_sla']:.1f}%** para "
-        f"**{ia['percentual_dentro_sla']:.1f}%** "
-        f"({formatar_diferenca(diferenca_sla_pp)} p.p.). "
-        f"% FCR 1h saiu de **{ip['percentual_fcr_1h']:.1f}%** para "
-        f"**{ia['percentual_fcr_1h']:.1f}%** "
-        f"({formatar_diferenca(diferenca_fcr_pp)} p.p.)."
-    )
-
-    pontos_positivos = []
-    pontos_atencao = []
-
-    if ia["dentro_sla"] > ip["dentro_sla"]:
-        pontos_positivos.append(f"mais chamados dentro do SLA (+{ia['dentro_sla'] - ip['dentro_sla']})")
-    elif ia["dentro_sla"] < ip["dentro_sla"]:
-        pontos_atencao.append(f"menos chamados dentro do SLA ({ia['dentro_sla'] - ip['dentro_sla']})")
-
-    if ia["fora_sla"] < ip["fora_sla"]:
-        pontos_positivos.append(f"redução de chamados fora do SLA ({ia['fora_sla'] - ip['fora_sla']})")
-    elif ia["fora_sla"] > ip["fora_sla"]:
-        pontos_atencao.append(f"aumento de chamados fora do SLA (+{ia['fora_sla'] - ip['fora_sla']})")
-
-    if ia["acima_72h"] < ip["acima_72h"]:
-        pontos_positivos.append(f"redução de chamados acima de 72h ({ia['acima_72h'] - ip['acima_72h']})")
-    elif ia["acima_72h"] > ip["acima_72h"]:
-        pontos_atencao.append(f"aumento de chamados acima de 72h (+{ia['acima_72h'] - ip['acima_72h']})")
-
-    if ia["em_aberto"] < ip["em_aberto"]:
-        pontos_positivos.append(f"menos chamados em aberto ({ia['em_aberto'] - ip['em_aberto']})")
-    elif ia["em_aberto"] > ip["em_aberto"]:
-        pontos_atencao.append(f"mais chamados em aberto (+{ia['em_aberto'] - ip['em_aberto']})")
-
-    if ia["fcr_1h"] > ip["fcr_1h"]:
-        pontos_positivos.append(f"mais resoluções em até 1h (+{ia['fcr_1h'] - ip['fcr_1h']})")
-    elif ia["fcr_1h"] < ip["fcr_1h"]:
-        pontos_atencao.append(f"menos resoluções em até 1h ({ia['fcr_1h'] - ip['fcr_1h']})")
-
-    if pontos_positivos:
-        st.success("Evoluções positivas: " + "; ".join(pontos_positivos) + ".")
-
-    if pontos_atencao:
-        st.warning("Pontos de atenção: " + "; ".join(pontos_atencao) + ".")
-
-    maior_crescimento_categoria = comp_categorias.sort_values("Diferença", ascending=False).head(1)
-    maior_reducao_categoria = comp_categorias.sort_values("Diferença", ascending=True).head(1)
-    maior_crescimento_cliente = comp_clientes.sort_values("Diferença", ascending=False).head(1)
-    maior_crescimento_solicitacao = comp_solicitacoes.sort_values("Diferença", ascending=False).head(1)
-
-    if not maior_crescimento_categoria.empty:
-        linha = maior_crescimento_categoria.iloc[0]
-        if linha["Diferença"] > 0:
-            st.info(
-                f"Categoria que mais cresceu: **{linha['Categoria Principal']}** "
-                f"subiu de {linha['Mês anterior']} para {linha['Mês atual']} chamados "
-                f"(**+{linha['Diferença']} | {formatar_variacao(linha['Variação %'])}**)."
-            )
-
-    if not maior_reducao_categoria.empty:
-        linha = maior_reducao_categoria.iloc[0]
-        if linha["Diferença"] < 0:
-            st.success(
-                f"Categoria que mais reduziu: **{linha['Categoria Principal']}** "
-                f"caiu de {linha['Mês anterior']} para {linha['Mês atual']} chamados "
-                f"(**{linha['Diferença']} | {formatar_variacao(linha['Variação %'])}**)."
-            )
-
-    if not maior_crescimento_cliente.empty:
-        linha = maior_crescimento_cliente.iloc[0]
-        if linha["Diferença"] > 0:
-            st.warning(
-                f"Cliente com maior aumento de chamados: **{linha['Cliente']}** "
-                f"subiu de {linha['Mês anterior']} para {linha['Mês atual']} chamados "
-                f"(**+{linha['Diferença']} | {formatar_variacao(linha['Variação %'])}**)."
-            )
-
-    if not maior_crescimento_solicitacao.empty:
-        linha = maior_crescimento_solicitacao.iloc[0]
-        if linha["Diferença"] > 0:
-            st.warning(
-                f"Solicitação específica com maior aumento: **{linha['Solicitação Específica']}** "
-                f"subiu de {linha['Mês anterior']} para {linha['Mês atual']} chamados "
-                f"(**+{linha['Diferença']} | {formatar_variacao(linha['Variação %'])}**)."
-            )
-
-
-def render_comparativo(atual, anterior):
-    st.subheader("Comparação entre mês anterior e mês atual")
-    st.caption("Os gráficos estão em ordem cronológica: primeiro o mês anterior, depois o mês atual.")
-
-    ia = atual["indicadores"]
-    ip = anterior["indicadores"]
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(
-        "Chamados no mês atual",
-        ia["total_chamados"],
-        delta=f"{formatar_diferenca(ia['total_chamados'] - ip['total_chamados'])} | {formatar_variacao(calcular_variacao_percentual(ia['total_chamados'], ip['total_chamados']))}",
-        delta_color="inverse",
-    )
-    c2.metric(
-        "Dentro SLA atual",
-        ia["dentro_sla"],
-        delta=f"{formatar_diferenca(ia['dentro_sla'] - ip['dentro_sla'])} | {formatar_variacao(calcular_variacao_percentual(ia['dentro_sla'], ip['dentro_sla']))}",
-    )
-    c3.metric(
-        "Fora SLA atual",
-        ia["fora_sla"],
-        delta=f"{formatar_diferenca(ia['fora_sla'] - ip['fora_sla'])} | {formatar_variacao(calcular_variacao_percentual(ia['fora_sla'], ip['fora_sla']))}",
-        delta_color="inverse",
-    )
-    c4.metric(
-        "% SLA atual",
-        f"{ia['percentual_dentro_sla']:.1f}%",
-        delta=f"{ia['percentual_dentro_sla'] - ip['percentual_dentro_sla']:.1f} p.p.",
-    )
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric(
-        "Até 72h atual",
-        ia["ate_72h"],
-        delta=f"{formatar_diferenca(ia['ate_72h'] - ip['ate_72h'])} | {formatar_variacao(calcular_variacao_percentual(ia['ate_72h'], ip['ate_72h']))}",
-    )
-    c6.metric(
-        "Acima 72h atual",
-        ia["acima_72h"],
-        delta=f"{formatar_diferenca(ia['acima_72h'] - ip['acima_72h'])} | {formatar_variacao(calcular_variacao_percentual(ia['acima_72h'], ip['acima_72h']))}",
-        delta_color="inverse",
-    )
-    c7.metric(
-        "Em aberto atual",
-        ia["em_aberto"],
-        delta=f"{formatar_diferenca(ia['em_aberto'] - ip['em_aberto'])} | {formatar_variacao(calcular_variacao_percentual(ia['em_aberto'], ip['em_aberto']))}",
-        delta_color="inverse",
-    )
-    c8.metric(
-        "Empresas atual",
-        ia["total_empresas"],
-        delta=f"{formatar_diferenca(ia['total_empresas'] - ip['total_empresas'])} | {formatar_variacao(calcular_variacao_percentual(ia['total_empresas'], ip['total_empresas']))}",
-    )
-
-    c9, c10 = st.columns(2)
-    c9.metric(
-        "FCR até 1h atual",
-        ia["fcr_1h"],
-        delta=f"{formatar_diferenca(ia['fcr_1h'] - ip['fcr_1h'])} | {formatar_variacao(calcular_variacao_percentual(ia['fcr_1h'], ip['fcr_1h']))}",
-    )
-    c10.metric(
-        "% FCR 1h atual",
-        f"{ia['percentual_fcr_1h']:.1f}%",
-        delta=f"{ia['percentual_fcr_1h'] - ip['percentual_fcr_1h']:.1f} p.p.",
-    )
-
-    comp_indicadores = montar_comparativo_indicadores(atual, anterior)
-
-    st.write("### Comparativo geral")
-    st.dataframe(preparar_dataframe_exibicao_percentual(comp_indicadores), use_container_width=True)
-
-    st.write("### Visão comparativa de SLA, 72h e FCR 1h")
-
-    g1, g2 = st.columns(2)
-
-    with g1:
-        comp_72h_status = montar_status_comparativo(atual, anterior, "resumo_72h", "Status 72h")
-        fig_72h_comp = px.bar(
-            comp_72h_status,
-            x="Status 72h",
-            y="Chamados",
-            color="Mês",
-            barmode="group",
-            text="Chamados",
-            title="Tratamento em 72 horas: mês anterior x mês atual",
-            category_orders={"Mês": ORDEM_MESES, "Status 72h": ORDEM_72H},
-        )
-        st.plotly_chart(fig_72h_comp, use_container_width=True)
-
-    with g2:
-        comp_sla_status = montar_status_comparativo(atual, anterior, "resumo_sla", "Status SLA")
-        fig_sla_comp = px.bar(
-            comp_sla_status,
-            x="Status SLA",
-            y="Chamados",
-            color="Mês",
-            barmode="group",
-            text="Chamados",
-            title="SLA: mês anterior x mês atual",
-            category_orders={"Mês": ORDEM_MESES, "Status SLA": ORDEM_SLA},
-        )
-        st.plotly_chart(fig_sla_comp, use_container_width=True)
-
-    comp_fcr_status = montar_status_comparativo(atual, anterior, "resumo_fcr_1h", "Status FCR 1h")
-    fig_fcr_comp = px.bar(
-        comp_fcr_status,
-        x="Status FCR 1h",
-        y="Chamados",
-        color="Mês",
-        barmode="group",
-        text="Chamados",
-        title="First Call Resolution 1h: mês anterior x mês atual",
-        category_orders={"Mês": ORDEM_MESES, "Status FCR 1h": ORDEM_FCR_1H},
-    )
-    st.plotly_chart(fig_fcr_comp, use_container_width=True)
-
-    comp_grafico = comp_indicadores[
-        comp_indicadores["Indicador"].isin([
-            "Total de chamados",
-            "Dentro do SLA",
-            "Fora do SLA",
-            "Em aberto / Em tratamento",
-            "Tratados até 72h",
-            "Tratados acima de 72h",
-            "First Call Resolution até 1h",
-        ])
-    ]
-
-    comp_grafico_melt = comp_grafico.melt(
-        id_vars="Indicador",
-        value_vars=["Mês anterior", "Mês atual"],
-        var_name="Mês",
-        value_name="Chamados",
-    )
-
-    fig_comp = px.bar(
-        comp_grafico_melt,
-        x="Indicador",
-        y="Chamados",
-        color="Mês",
-        barmode="group",
-        text="Chamados",
-        title="Comparação geral entre os meses",
-        category_orders={"Mês": ORDEM_MESES},
-    )
-    st.plotly_chart(fig_comp, use_container_width=True)
-
-    comp_clientes = comparar_resumos(atual["resumo_clientes"], anterior["resumo_clientes"], "Cliente")
-    comp_categorias = comparar_resumos(atual["resumo_categorias"], anterior["resumo_categorias"], "Categoria Principal")
-    comp_solicitacoes = comparar_resumos(atual["resumo_solicitacoes"], anterior["resumo_solicitacoes"], "Solicitação Específica")
-
-    render_resumo_evolucao(atual, anterior, comp_categorias, comp_clientes, comp_solicitacoes)
-
-    st.write("### Comparação por categoria principal")
-
-    top_categorias = comp_categorias.sort_values("Mês atual", ascending=False).head(10)
-    top_categorias_melt = top_categorias.melt(
-        id_vars="Categoria Principal",
-        value_vars=["Mês anterior", "Mês atual"],
-        var_name="Mês",
-        value_name="Chamados",
-    )
-
-    fig_cat = px.bar(
-        top_categorias_melt,
-        x="Chamados",
-        y="Categoria Principal",
-        color="Mês",
-        orientation="h",
-        barmode="group",
-        text="Chamados",
-        title="Categorias principais: mês anterior x mês atual",
-        category_orders={"Mês": ORDEM_MESES},
-    )
-    fig_cat.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig_cat, use_container_width=True)
-
-    st.write("### Comparação por cliente")
-
-    top_clientes = comp_clientes.sort_values("Mês atual", ascending=False).head(10)
-    top_clientes_melt = top_clientes.melt(
-        id_vars="Cliente",
-        value_vars=["Mês anterior", "Mês atual"],
-        var_name="Mês",
-        value_name="Chamados",
-    )
-
-    fig_cli = px.bar(
-        top_clientes_melt,
-        x="Chamados",
-        y="Cliente",
-        color="Mês",
-        orientation="h",
-        barmode="group",
-        text="Chamados",
-        title="Clientes: mês anterior x mês atual",
-        category_orders={"Mês": ORDEM_MESES},
-    )
-    fig_cli.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig_cli, use_container_width=True)
-
-    st.write("### Tabelas comparativas")
-
-    t1, t2 = st.columns(2)
-
-    with t1:
-        st.write("Categorias principais")
-        st.dataframe(preparar_dataframe_exibicao_percentual(comp_categorias), use_container_width=True)
-
-    with t2:
-        st.write("Clientes")
-        st.dataframe(preparar_dataframe_exibicao_percentual(comp_clientes), use_container_width=True)
-
-    st.write("Solicitações específicas")
-    st.dataframe(preparar_dataframe_exibicao_percentual(comp_solicitacoes), use_container_width=True)
-
-
-# =========================
-# APP
-# =========================
-
-st.title("📊 Dashboard de Chamados")
-st.write("Envie a planilha do mês atual para gerar o dashboard. Na aba de comparação, envie também a planilha do mês anterior.")
-
-arquivo_atual = st.file_uploader(
-    "Faça upload da planilha do mês atual",
+st.sidebar.image("https://img.icons8.com/color/96/000000/dashboard.png", width=80)
+st.sidebar.title("Painel de Controle")
+
+arquivo_atual = st.sidebar.file_uploader(
+    "1. Planilha do Mês Atual (Obrigatório)",
     type=["xls", "xlsx", "xlsm", "csv"],
-    key="arquivo_atual",
 )
 
-if arquivo_atual is None:
-    st.warning("Envie a planilha do mês atual para começar.")
+if not arquivo_atual:
+    render_header("📊 Dashboard Executivo de Chamados", "Envie o arquivo do Mês Atual para começar")
+    st.info("👋 **Bem-vindo!** Para gerar os dashboards executivos estilo Power BI, faça o upload da planilha do mês atual no menu lateral.")
+    st.markdown("""
+    ---
+    ### 📂 Como rodar e preparar seus arquivos:
+    1. **Upload da Base Atual:** Carregue a planilha mensal principal. O sistema reconhece automaticamente arquivos `.xls`, `.xlsx`, `.xlsm` e `.csv`.
+    2. **Filtros Globais:** Após carregar a base atual, utilize os filtros de Cliente, Categoria, Responsável e Período de abertura para refinar a análise de todo o dashboard.
+    3. **Aba Comparação:** Carregue a planilha do mês anterior dentro da Aba 2 para ver deltas percentuais, gráficos lado a lado e análise de insights escrita automaticamente por IA.
+    4. **Controle de Responsáveis:** Veja quem são os analistas líderes de volume e produtividade de SLA (filtrados para um mínimo de 5 chamados finalizados).
+    5. **Exportação:** Baixe a planilha Excel consolidada e tratada de forma consistente na Aba de Base Analítica.
+    """)
     st.stop()
 
+# Carregar base atual
 try:
-    resultado_atual = processar_base(arquivo_atual, "Mês atual")
-    st.success("Planilha do mês atual carregada com sucesso!")
+    df_atual_clean, colunas_atual = carregar_e_tratar_base(arquivo_atual, "Mês atual")
+except Exception as e:
+    st.sidebar.error("Erro ao processar Mês Atual.")
+    st.error(f"❌ **Falha ao ler os dados da planilha do Mês Atual:** {str(e)}")
+    st.stop()
 
-    aba_dashboard, aba_comparativo = st.tabs([
-        "Dashboard mês atual",
-        "Comparação com mês anterior",
-    ])
+# Seleção/Confirmação manual de Mês e Ano para a Base Atual
+list_meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+list_anos = list(range(2020, 2031))
 
-    with aba_dashboard:
-        render_dashboard(resultado_atual)
+mes_det_at, ano_det_at = detectar_mes_arquivo(arquivo_atual.name)
+st.sidebar.markdown("#### Confirmar Mês Atual")
+col_sidebar_m, col_sidebar_a = st.sidebar.columns(2)
+with col_sidebar_m:
+    mes_idx_at = (mes_det_at - 1) if (mes_det_at and 1 <= mes_det_at <= 12) else 0
+    mes_sel_at = st.selectbox("Mês", options=list_meses, index=mes_idx_at, key="sidebar_mes_atual")
+with col_sidebar_a:
+    ano_idx_at = list_anos.index(ano_det_at) if (ano_det_at and ano_det_at in list_anos) else list_anos.index(datetime.date.today().year)
+    ano_sel_at = st.selectbox("Ano", options=list_anos, index=ano_idx_at, key="sidebar_ano_atual")
 
-        excel_atual = gerar_excel_resultado(resultado_atual)
+label_mes_atual = gerar_label_mes(mes_sel_at, ano_sel_at)
 
-        st.download_button(
-            label="📥 Baixar dashboard do mês atual em Excel",
-            data=excel_atual,
-            file_name="dashboard_chamados_mes_atual.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_atual",
-        )
+# Extrair opções para os filtros a partir da base limpa única
+clientes_opcoes = sorted([x for x in df_atual_clean["Cliente Análise"].dropna().unique() if x != "Não informado"])
+categorias_opcoes = sorted([x for x in df_atual_clean["Categoria Principal"].dropna().unique() if x != "Não informado"])
+solicitacoes_opcoes = sorted([x for x in df_atual_clean["Solicitação Específica"].dropna().unique() if x != "Não informado"])
+responsaveis_opcoes = sorted([x for x in df_atual_clean["Responsável Análise"].dropna().unique() if x != "Não informado"])
+status_sla_opcoes = sorted(df_atual_clean["Status SLA"].dropna().unique().tolist())
+status_72h_opcoes = sorted(df_atual_clean["Status 72h"].dropna().unique().tolist())
 
-    with aba_comparativo:
-        st.write("Envie a planilha do mês anterior para comparar com o mês atual.")
+# Construir os filtros na Sidebar
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔍 Filtros Globais")
 
-        arquivo_anterior = st.file_uploader(
-            "Faça upload da planilha do mês anterior",
-            type=["xls", "xlsx", "xlsm", "csv"],
-            key="arquivo_anterior",
-        )
+clientes_sel = st.sidebar.multiselect("Clientes / Empresas", options=["Não informado"] + clientes_opcoes, placeholder="Todos")
+categorias_sel = st.sidebar.multiselect("Categorias Principais", options=["Não informado"] + categorias_opcoes, placeholder="Todas")
+solicitacoes_sel = st.sidebar.multiselect("Solicitações Específicas", options=["Não informado"] + solicitacoes_opcoes, placeholder="Todas")
+responsaveis_sel = st.sidebar.multiselect("Responsáveis / Finalizadores", options=["Não informado"] + responsaveis_opcoes, placeholder="Todos")
+status_sla_sel = st.sidebar.multiselect("Status SLA", options=status_sla_opcoes, placeholder="Todos")
+status_72h_sel = st.sidebar.multiselect("Status 72h", options=status_72h_opcoes, placeholder="Todos")
 
-        if arquivo_anterior is None:
-            st.info("Quando você enviar a planilha do mês anterior, a comparação aparecerá aqui.")
+# Slider de data de abertura
+col_abert = colunas_atual["col_abertura"]
+min_data = df_atual_clean[col_abert].dropna().min()
+max_data = df_atual_clean[col_abert].dropna().max()
+
+if pd.isna(min_data) or pd.isna(max_data):
+    min_date_val = datetime.date.today()
+    max_date_val = datetime.date.today()
+else:
+    min_date_val = min_data.to_pydatetime().date()
+    max_date_val = max_data.to_pydatetime().date()
+
+if min_date_val == max_date_val:
+    data_inicio, data_fim = min_date_val, max_date_val
+else:
+    dates = st.sidebar.date_input(
+        "Período de Abertura",
+        value=[min_date_val, max_date_val],
+        min_value=min_date_val,
+        max_value=max_date_val
+    )
+    if isinstance(dates, list) or isinstance(dates, tuple):
+        if len(dates) == 2:
+            data_inicio, data_fim = dates[0], dates[1]
+        elif len(dates) == 1:
+            data_inicio, data_fim = dates[0], dates[0]
         else:
-            resultado_anterior = processar_base(arquivo_anterior, "Mês anterior")
-            st.success("Planilha do mês anterior carregada com sucesso!")
+            data_inicio, data_fim = min_date_val, max_date_val
+    else:
+        data_inicio, data_fim = dates, dates
 
-            render_comparativo(resultado_atual, resultado_anterior)
+st.sidebar.markdown("---")
+aplicar_anterior_sel = st.sidebar.radio(
+    "Aplicar filtros globais também ao mês anterior/histórico?",
+    ["Sim", "Não"],
+    index=0
+)
+aplicar_anterior = (aplicar_anterior_sel == "Sim")
 
-            excel_comparativo = gerar_excel_resultado(resultado_atual, resultado_anterior)
 
-            st.download_button(
-                label="📥 Baixar Excel com dashboard e comparativo",
-                data=excel_comparativo,
-                file_name="dashboard_chamados_comparativo.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_comparativo",
+# =========================
+# APLICAÇÃO DOS FILTROS GLOBAIS
+# =========================
+def aplicar_filtros_globais(df, col_abertura):
+    df_filt = df.copy()
+    if df_filt.empty:
+        return df_filt
+        
+    if clientes_sel:
+        df_filt = df_filt[df_filt["Cliente Análise"].isin(clientes_sel)]
+    if categorias_sel:
+        df_filt = df_filt[df_filt["Categoria Principal"].isin(categorias_sel)]
+    if solicitacoes_sel:
+        df_filt = df_filt[df_filt["Solicitação Específica"].isin(solicitacoes_sel)]
+    if responsaveis_sel:
+        df_filt = df_filt[df_filt["Responsável Análise"].isin(responsaveis_sel)]
+    if status_sla_sel:
+        df_filt = df_filt[df_filt["Status SLA"].isin(status_sla_sel)]
+    if status_72h_sel:
+        df_filt = df_filt[df_filt["Status 72h"].isin(status_72h_sel)]
+        
+    if col_abertura and col_abertura in df_filt.columns:
+        col_dt = pd.to_datetime(df_filt[col_abertura])
+        df_filt = df_filt[col_dt.notna() & (col_dt.dt.date >= data_inicio) & (col_dt.dt.date <= data_fim)]
+        
+    return df_filt
+
+
+# Obter base filtrada única do mês atual
+df_atual_filtered = aplicar_filtros_globais(df_atual_clean, colunas_atual["col_abertura"])
+
+# Calcular resumos e indicadores da base atual filtrada
+ind_atual = calcular_indicadores(df_atual_filtered)
+df_resp_atual = obter_tabela_responsaveis(df_atual_filtered)
+
+# Tabelas de frequência da base filtrada atual
+resumo_clientes_atual = df_atual_filtered.groupby("Cliente Análise").size().reset_index(name="Chamados").rename(columns={"Cliente Análise": "Cliente"}).sort_values("Chamados", ascending=False)
+resumo_categorias_atual = df_atual_filtered.groupby("Categoria Principal").size().reset_index(name="Chamados").sort_values("Chamados", ascending=False)
+resumo_solicitacoes_atual = df_atual_filtered.groupby("Solicitação Específica").size().reset_index(name="Chamados").sort_values("Chamados", ascending=False)
+resumo_sla_atual = df_atual_filtered["Status SLA"].value_counts().reindex(ORDEM_SLA, fill_value=0).reset_index(name="Chamados")
+resumo_72h_atual = df_atual_filtered["Status 72h"].value_counts().reindex(ORDEM_72H, fill_value=0).reset_index(name="Chamados")
+
+
+# =========================
+# CABEÇALHO DA INTERFACE
+# =========================
+periodo_texto = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
+render_header("📊 Dashboard Executivo de Chamados", f"Mês de Referência: {label_mes_atual}", periodo_texto)
+
+
+# =========================
+# GERENCIAMENTO DE ABAS
+# =========================
+tab_visao, tab_comp, tab_resp, tab_cli, tab_qual, tab_base = st.tabs([
+    "Visão Executiva",
+    "Comparação Mensal",
+    "Atendimento por Responsável",
+    "Clientes e Categorias",
+    "Qualidade da Base",
+    "Base Analítica"
+])
+
+
+# ---------------------------------------------
+# ABA 1: VISÃO EXECUTIVA
+# ---------------------------------------------
+with tab_visao:
+    st.markdown("### 🗝️ Indicadores Chave de Desempenho (KPIs)")
+    
+    # Grid de cartões KPI personalizados
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        metric_card("Total de Chamados", f"{ind_atual['total_chamados']:,}".replace(",", "."), card_type="blue")
+    with c2:
+        metric_card("Empresas com Chamados", f"{ind_atual['total_empresas']:,}", card_type="blue")
+    with c3:
+        metric_card("SLA Tratado", f"{ind_atual['sla_tratado']:,}", card_type="blue")
+    with c4:
+        pct_sla = ind_atual["percentual_dentro_sla"]
+        card_t = "green" if pct_sla >= 90 else ("red" if pct_sla < 80 else "orange")
+        metric_card("% Dentro do SLA", f"{pct_sla:.1f}%", card_type=card_t)
+
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        metric_card("Dentro do SLA", f"{ind_atual['dentro_sla']:,}", card_type="green")
+    with c6:
+        metric_card("Fora do SLA", f"{ind_atual['fora_sla']:,}", card_type="red")
+    with c7:
+        metric_card("SLA Não Informado", f"{ind_atual['sla_nao_informado']:,}", card_type="blue")
+    with c8:
+        metric_card("Em Aberto / Em Tratamento", f"{ind_atual['em_aberto']:,}", card_type="orange")
+
+    fcr_exist = (ind_atual.get("fcr_tratado", 0) > 0)
+    if fcr_exist:
+        c9, c10, c11, c12 = st.columns(4)
+    else:
+        c9, c10, c11 = st.columns(3)
+        
+    with c9:
+        metric_card("Tratados até 72h", f"{ind_atual['ate_72h']:,}", card_type="green")
+    with c10:
+        metric_card("Tratados acima de 72h", f"{ind_atual['acima_72h']:,}", card_type="red")
+    with c11:
+        metric_card("72h Não Informado", f"{ind_atual['nao_informado_72h']:,}", card_type="blue")
+    if fcr_exist:
+        with c12:
+            metric_card("% FCR (1 Hora)", f"{ind_atual['percentual_fcr_1h']:.1f}%", card_type="blue")
+
+    # Blocos de Destaque
+    st.markdown("---")
+    st.markdown("### 🏆 Líderes de Volume e Recorrência")
+    h1, h2, h3 = st.columns(3)
+    
+    total_ch = ind_atual["total_chamados"]
+    with h1:
+        pct_cli = (ind_atual["cliente_top_qtd"] / total_ch * 100) if total_ch > 0 else 0
+        highlight_block("Cliente Líder de Volume", ind_atual["cliente_top"], ind_atual["cliente_top_qtd"], pct_cli, "blue")
+    with h2:
+        pct_cat = (ind_atual["categoria_top_qtd"] / total_ch * 100) if total_ch > 0 else 0
+        highlight_block("Categoria Principal Líder", ind_atual["categoria_top"], ind_atual["categoria_top_qtd"], pct_cat, "blue")
+    with h3:
+        pct_sol = (ind_atual["solicitacao_top_qtd"] / total_ch * 100) if total_ch > 0 else 0
+        highlight_block("Solicitação Mais Recorrente", ind_atual["solicitacao_top"], ind_atual["solicitacao_top_qtd"], pct_sol, "blue")
+
+    # Gráficos da aba executiva
+    st.markdown("---")
+    st.markdown("### 📊 Visão Gráfica Operacional")
+    g1, g2 = st.columns(2)
+    with g1:
+        st.plotly_chart(plot_donut_chart(df_atual_filtered, "Status SLA", "Distribuição por Status SLA", COLOR_MAP_SLA), use_container_width=True)
+    with g2:
+        st.plotly_chart(plot_donut_chart(df_atual_filtered, "Status 72h", "Distribuição por Tempo de Tratamento (72h)", COLOR_MAP_72H), use_container_width=True)
+
+    st.markdown("---")
+    st.plotly_chart(plot_horizontal_bar(df_atual_filtered, "Cliente Análise", "Top 10 Clientes por Volume de Chamados", 10, "#1F4E78"), use_container_width=True)
+    
+    g3, g4 = st.columns(2)
+    with g3:
+        st.plotly_chart(plot_horizontal_bar(df_atual_filtered, "Categoria Principal", "Top 10 Categorias Principais", 10, "#2F5597"), use_container_width=True)
+    with g4:
+        st.plotly_chart(plot_horizontal_bar(df_atual_filtered, "Solicitação Específica", "Top 10 Solicitações Específicas", 10, "#8FAADC"), use_container_width=True)
+
+
+# ---------------------------------------------
+# ABA 2: COMPARAÇÃO MENSAL
+# ---------------------------------------------
+with tab_comp:
+    # Seleção da subvisão
+    opcao_comp = st.radio(
+        "Selecione o tipo de análise comparativa:",
+        ["Comparação de 2 Meses", "Histórico Multimensal / Auditoria Mensal"],
+        horizontal=True,
+        key="comp_sub_tab_select"
+    )
+
+    if opcao_comp == "Comparação de 2 Meses":
+        st.markdown("### ⚖️ Comparação Direta de Desempenho (Mês de Análise x Mês de Comparação)")
+        st.write("Faça o upload da planilha do mês anterior para habilitar a comparação.")
+        
+        arquivo_anterior = st.file_uploader(
+            "2. Planilha do Mês de Comparação (Opcional)",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            key="uploader_anterior_aba",
+        )
+
+        if not arquivo_anterior:
+            st.info("ℹ️ **Aguardando base comparativa.** Faça o upload da planilha de comparação acima para liberar a análise executiva.")
+        else:
+            try:
+                df_anterior_clean, colunas_anterior = carregar_e_tratar_base(arquivo_anterior, "Mês anterior")
+                st.success("Planilha do Mês Anterior carregada com sucesso!")
+            except Exception as e:
+                st.error(f"❌ Erro ao ler a base do Mês Anterior: {str(e)}")
+                st.stop()
+
+            # Confirmar o Mês/Ano do arquivo anterior
+            mes_det_ant, ano_det_ant = detectar_mes_arquivo(arquivo_anterior.name)
+            st.markdown("#### Confirmar Mês Anterior")
+            col_m_ant, col_a_ant = st.columns(2)
+            with col_m_ant:
+                mes_idx_ant = (mes_det_ant - 1) if (mes_det_ant and 1 <= mes_det_ant <= 12) else 0
+                mes_sel_ant = st.selectbox("Mês", options=list_meses, index=mes_idx_ant, key="comp_mes_anterior")
+            with col_a_ant:
+                ano_idx_ant = list_anos.index(ano_det_ant) if (ano_det_ant and ano_det_ant in list_anos) else list_anos.index(datetime.date.today().year)
+                ano_sel_ant = st.selectbox("Ano", options=list_anos, index=ano_idx_ant, key="comp_ano_anterior")
+
+            label_mes_anterior = gerar_label_mes(mes_sel_ant, ano_sel_ant)
+
+            # Filtrar base anterior se ativado
+            if aplicar_anterior:
+                df_anterior_filtered = aplicar_filtros_globais(df_anterior_clean, colunas_anterior["col_abertura"])
+            else:
+                df_anterior_filtered = df_anterior_clean
+
+            ind_anterior = calcular_indicadores(df_anterior_filtered)
+
+            # Salvar no session_state para que a aba 6 (download) e outras visualizações usem
+            st.session_state["resultado_anterior"] = {
+                "df": df_anterior_filtered,
+                "indicadores": ind_anterior,
+                "resumo_sla": df_anterior_filtered["Status SLA"].value_counts().reindex(ORDEM_SLA, fill_value=0).reset_index(name="Chamados"),
+                "resumo_72h": df_anterior_filtered["Status 72h"].value_counts().reindex(ORDEM_72H, fill_value=0).reset_index(name="Chamados"),
+                "resumo_fcr_1h": df_anterior_filtered["Status FCR 1h"].value_counts().reindex(["Resolvido até 1h", "Resolvido acima de 1h", "FCR não informado", "Em aberto / Em tratamento"], fill_value=0).reset_index(name="Chamados")
+            }
+            st.session_state["label_mes_anterior"] = label_mes_anterior
+            st.session_state["arquivo_anterior_nome"] = arquivo_anterior.name
+
+            # -------------------
+            # CABEÇALHO EXECUTIVO
+            # -------------------
+            st.markdown(f"""
+            <div style="background-color: #F8FAFC; padding: 24px; border-radius: 8px; border-left: 5px solid #1F4E78; margin-bottom: 20px; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05); border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;">
+                <h3 style="margin-top: 0; color: #1F4E78; font-size: 20px; font-weight: 700; margin-bottom: 16px; font-family: 'Segoe UI', sans-serif;">⚖️ Comparação em Análise: {label_mes_anterior} x {label_mes_atual}</h3>
+                <div style="display: flex; gap: 32px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 250px; background-color: #FFFFFF; padding: 16px; border-radius: 6px; border: 1px solid #E2E8F0;">
+                        <h4 style="margin-top: 0; color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Mês Anterior ({label_mes_anterior})</h4>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Arquivo:</strong> <span style="font-family: monospace;">{arquivo_anterior.name}</span></div>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Mês selecionado:</strong> {label_mes_anterior}</div>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Linhas brutas:</strong> {len(df_anterior_clean):,}</div>
+                        <div style="font-size: 13px; color: #64748B;"><strong>Linhas filtradas:</strong> {len(df_anterior_filtered):,}</div>
+                    </div>
+                    <div style="flex: 1; min-width: 250px; background-color: #FFFFFF; padding: 16px; border-radius: 6px; border: 1px solid #E2E8F0;">
+                        <h4 style="margin-top: 0; color: #1F4E78; font-size: 14px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Mês Atual ({label_mes_atual})</h4>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Arquivo:</strong> <span style="font-family: monospace;">{arquivo_atual.name}</span></div>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Mês selecionado:</strong> {label_mes_atual}</div>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Linhas brutas:</strong> {len(df_atual_clean):,}</div>
+                        <div style="font-size: 13px; color: #64748B;"><strong>Linhas filtradas:</strong> {len(df_atual_filtered):,}</div>
+                    </div>
+                </div>
+                <div style="margin-top: 16px; font-size: 11px; color: #94A3B8;">
+                    <strong>Data/Hora de processamento:</strong> {datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # AVISO DE RECORTE SE FILTROS ATIVOS
+            filtros_ativos = bool(
+                clientes_sel or categorias_sel or solicitacoes_sel or 
+                responsaveis_sel or status_sla_sel or status_72h_sel or
+                (data_inicio != min_date_val or data_fim != max_date_val)
+            )
+            if filtros_ativos:
+                st.warning("⚠️ **Atenção: esta comparação está com filtros aplicados. Os números representam um recorte da base, não o total geral dos meses.**")
+                st.markdown(f"""
+                * **Base atual:** {len(df_atual_filtered)} de {len(df_atual_clean)} chamados
+                * **Base anterior:** {len(df_anterior_filtered)} de {len(df_anterior_clean)} chamados
+                """)
+
+            # -------------------
+            # DELTAS E CARDS COMPARATIVOS
+            # -------------------
+            st.markdown("### 🗝️ Deltas Comparativos Executivos")
+
+            diff_total = ind_atual["total_chamados"] - ind_anterior["total_chamados"]
+            pct_total = calcular_variacao_percentual(ind_atual["total_chamados"], ind_anterior["total_chamados"])
+            
+            diff_dentro = ind_atual["dentro_sla"] - ind_anterior["dentro_sla"]
+            pct_dentro = calcular_variacao_percentual(ind_atual["dentro_sla"], ind_anterior["dentro_sla"])
+            
+            diff_fora = ind_atual["fora_sla"] - ind_anterior["fora_sla"]
+            pct_fora = calcular_variacao_percentual(ind_atual["fora_sla"], ind_anterior["fora_sla"])
+            
+            diff_sla_pct = ind_atual["percentual_dentro_sla"] - ind_anterior["percentual_dentro_sla"]
+            
+            diff_72h = ind_atual["ate_72h"] - ind_anterior["ate_72h"]
+            pct_72h = calcular_variacao_percentual(ind_atual["ate_72h"], ind_anterior["ate_72h"])
+            
+            diff_acima = ind_atual["acima_72h"] - ind_anterior["acima_72h"]
+            pct_acima = calcular_variacao_percentual(ind_atual["acima_72h"], ind_anterior["acima_72h"])
+            
+            diff_abertos = ind_atual["em_aberto"] - ind_anterior["em_aberto"]
+            pct_abertos = calcular_variacao_percentual(ind_atual["em_aberto"], ind_anterior["em_aberto"])
+            
+            diff_emp = ind_atual["total_empresas"] - ind_anterior["total_empresas"]
+            pct_emp = calcular_variacao_percentual(ind_atual["total_empresas"], ind_anterior["total_empresas"])
+            
+            diff_fcr = ind_atual["fcr_1h"] - ind_anterior["fcr_1h"]
+            pct_fcr = calcular_variacao_percentual(ind_atual["fcr_1h"], ind_anterior["fcr_1h"])
+            
+            diff_fcr_pct = ind_atual["percentual_fcr_1h"] - ind_anterior["percentual_fcr_1h"]
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                comparative_metric_card(
+                    "Total de Chamados",
+                    label_mes_atual, ind_atual["total_chamados"],
+                    label_mes_anterior, ind_anterior["total_chamados"],
+                    diff_total, pct_total,
+                    "total"
+                )
+            with c2:
+                comparative_metric_card(
+                    "Dentro do SLA",
+                    label_mes_atual, ind_atual["dentro_sla"],
+                    label_mes_anterior, ind_anterior["dentro_sla"],
+                    diff_dentro, pct_dentro,
+                    "positive"
+                )
+            with c3:
+                comparative_metric_card(
+                    "Fora do SLA",
+                    label_mes_atual, ind_atual["fora_sla"],
+                    label_mes_anterior, ind_anterior["fora_sla"],
+                    diff_fora, pct_fora,
+                    "negative"
+                )
+            with c4:
+                comparative_metric_card(
+                    "% SLA Dentro",
+                    label_mes_atual, ind_atual["percentual_dentro_sla"],
+                    label_mes_anterior, ind_anterior["percentual_dentro_sla"],
+                    diff_sla_pct, None,
+                    "positive"
+                )
+
+            c5, c6, c7, c8 = st.columns(4)
+            with c5:
+                comparative_metric_card(
+                    "Tratados até 72h",
+                    label_mes_atual, ind_atual["ate_72h"],
+                    label_mes_anterior, ind_anterior["ate_72h"],
+                    diff_72h, pct_72h,
+                    "positive"
+                )
+            with c6:
+                comparative_metric_card(
+                    "Tratados acima de 72h",
+                    label_mes_atual, ind_atual["acima_72h"],
+                    label_mes_anterior, ind_anterior["acima_72h"],
+                    diff_acima, pct_acima,
+                    "negative"
+                )
+            with c7:
+                comparative_metric_card(
+                    "Em Aberto / Em Tratamento",
+                    label_mes_atual, ind_atual["em_aberto"],
+                    label_mes_anterior, ind_anterior["em_aberto"],
+                    diff_abertos, pct_abertos,
+                    "negative"
+                )
+            with c8:
+                comparative_metric_card(
+                    "Clientes/Empresas",
+                    label_mes_atual, ind_atual["total_empresas"],
+                    label_mes_anterior, ind_anterior["total_empresas"],
+                    diff_emp, pct_emp,
+                    "total"
+                )
+
+            # Se FCR 1h estiver disponível, exibir cartões de FCR
+            if ind_atual["fcr_tratado"] > 0 or ind_anterior["fcr_tratado"] > 0:
+                c9, c10 = st.columns(2)
+                with c9:
+                    comparative_metric_card(
+                        "FCR até 1h",
+                        label_mes_atual, ind_atual["fcr_1h"],
+                        label_mes_anterior, ind_anterior["fcr_1h"],
+                        diff_fcr, pct_fcr,
+                        "positive"
+                    )
+                with c10:
+                    comparative_metric_card(
+                        "% FCR até 1h",
+                        label_mes_atual, ind_atual["percentual_fcr_1h"],
+                        label_mes_anterior, ind_anterior["percentual_fcr_1h"],
+                        diff_fcr_pct, None,
+                        "positive"
+                    )
+
+            # -------------------
+            # RESUMO EXECUTIVO E TEXTO DE EVOLUÇÃO
+            # -------------------
+            comp_cat = comparar_frequencias(df_atual_filtered, df_anterior_filtered, "Categoria Principal", "Categoria Principal")
+            comp_cli = comparar_frequencias(df_atual_filtered, df_anterior_filtered, "Cliente Análise", "Cliente")
+            comp_sol = comparar_frequencias(df_atual_filtered, df_anterior_filtered, "Solicitação Específica", "Solicitação Específica")
+
+            resumo_exec_texto, melhoras, pioras, atencoes = gerar_resumo_executivo(
+                ind_atual, ind_anterior, label_mes_atual, label_mes_anterior, comp_cat, comp_cli, comp_sol
             )
 
-except Exception as e:
-    st.error("Erro ao processar a planilha.")
-    st.exception(e)
+            st.markdown("---")
+            st.markdown("### 🧠 Resumo Executivo da Evolução")
+            st.info(resumo_exec_texto)
+
+            col_m, col_p, col_a = st.columns(3)
+            with col_m:
+                st.success("##### 🟢 Evoluções Positivas (Melhorou)")
+                if melhoras:
+                    for item in melhoras:
+                        st.markdown(f"- {item}")
+                else:
+                    st.markdown("- Nenhuma alteração positiva registrada.")
+
+            with col_p:
+                st.error("##### 🔴 Pontos de Regressão (Piorou)")
+                if pioras:
+                    for item in pioras:
+                        st.markdown(f"- {item}")
+                else:
+                    st.markdown("- Nenhuma regressão registrada.")
+
+            with col_a:
+                st.warning("##### ⚠️ Pontos de Atenção (Gestão)")
+                if atencoes:
+                    for item in atencoes:
+                        st.markdown(f"- {item}")
+                else:
+                    st.markdown("- Nenhum ponto crítico de atenção reportado no período.")
+
+            # -------------------
+            # GRÁFICOS LADO A LADO COM NOME REAL DOS MESES
+            # -------------------
+            st.markdown("---")
+            st.markdown("### 📊 Gráficos Comparativos de Status (Legendas Reais)")
+            
+            df_atual_status = df_atual_filtered[["Status SLA", "Status 72h"]].copy()
+            df_atual_status["Mês"] = label_mes_atual
+            df_anterior_status = df_anterior_filtered[["Status SLA", "Status 72h"]].copy()
+            df_anterior_status["Mês"] = label_mes_anterior
+            df_combined_status = pd.concat([df_atual_status, df_anterior_status], ignore_index=True)
+
+            df_atual_fcr = df_atual_filtered[["Status FCR 1h"]].copy()
+            df_atual_fcr["Mês"] = label_mes_atual
+            df_anterior_fcr = df_anterior_filtered[["Status FCR 1h"]].copy()
+            df_anterior_fcr["Mês"] = label_mes_anterior
+            df_combined_fcr = pd.concat([df_atual_fcr, df_anterior_fcr], ignore_index=True)
+
+            g1, g2 = st.columns(2)
+            with g1:
+                st.plotly_chart(
+                    plot_grouped_status_comparison(
+                        df_combined_status,
+                        "Status SLA",
+                        f"SLA: {label_mes_anterior} x {label_mes_atual}",
+                        ORDEM_SLA,
+                        COLOR_MAP_SLA,
+                        label_mes_anterior,
+                        label_mes_atual
+                    ),
+                    use_container_width=True
+                )
+            with g2:
+                st.plotly_chart(
+                    plot_grouped_status_comparison(
+                        df_combined_status,
+                        "Status 72h",
+                        f"Tempo de Resolução (72h): {label_mes_anterior} x {label_mes_atual}",
+                        ORDEM_72H,
+                        COLOR_MAP_72H,
+                        label_mes_anterior,
+                        label_mes_atual
+                    ),
+                    use_container_width=True
+                )
+
+            # Mostrar FCR se houver dados
+            if ind_atual["fcr_tratado"] > 0 or ind_anterior["fcr_tratado"] > 0:
+                st.plotly_chart(
+                    plot_grouped_status_comparison(
+                        df_combined_fcr,
+                        "Status FCR 1h",
+                        f"First Call Resolution (FCR 1h): {label_mes_anterior} x {label_mes_atual}",
+                        ["Resolvido até 1h", "Resolvido acima de 1h", "FCR não informado", "Em aberto / Em tratamento"],
+                        COLOR_MAP_FCR,
+                        label_mes_anterior,
+                        label_mes_atual
+                    ),
+                    use_container_width=True
+                )
+
+            # Rankings agrupados
+            st.markdown("---")
+            st.markdown("### 📈 Rankings Comparativos")
+            
+            g3, g4 = st.columns(2)
+            with g3:
+                top_cats = comp_cat.head(10)
+                top_cats_renamed = top_cats.rename(columns={"Mês anterior": label_mes_anterior, "Mês atual": label_mes_atual})
+                top_cats_melt = top_cats_renamed.melt(id_vars="Categoria Principal", value_vars=[label_mes_anterior, label_mes_atual], var_name="Mês", value_name="Chamados")
+                st.plotly_chart(
+                    plot_grouped_bar_comparison(
+                        top_cats_melt, "Categoria Principal", f"Top Categorias Principais: {label_mes_anterior} x {label_mes_atual}", label_mes_anterior, label_mes_atual
+                    ),
+                    use_container_width=True
+                )
+            with g4:
+                top_clis = comp_cli.head(10)
+                top_clis_renamed = top_clis.rename(columns={"Mês anterior": label_mes_anterior, "Mês atual": label_mes_atual})
+                top_clis_melt = top_clis_renamed.melt(id_vars="Cliente", value_vars=[label_mes_anterior, label_mes_atual], var_name="Mês", value_name="Chamados")
+                st.plotly_chart(
+                    plot_grouped_bar_comparison(
+                        top_clis_melt, "Cliente", f"Top Clientes: {label_mes_anterior} x {label_mes_atual}", label_mes_anterior, label_mes_atual
+                    ),
+                    use_container_width=True
+                )
+
+            top_sols = comp_sol.head(10)
+            top_sols_renamed = top_sols.rename(columns={"Mês anterior": label_mes_anterior, "Mês atual": label_mes_atual})
+            top_sols_melt = top_sols_renamed.melt(id_vars="Solicitação Específica", value_vars=[label_mes_anterior, label_mes_atual], var_name="Mês", value_name="Chamados")
+            st.plotly_chart(
+                plot_grouped_bar_comparison(
+                    top_sols_melt, "Solicitação Específica", f"Top Solicitações Específicas: {label_mes_anterior} x {label_mes_atual}", label_mes_anterior, label_mes_atual, height=450
+                ),
+                use_container_width=True
+            )
+
+            # Tabelas comparativas detalhadas
+            st.markdown("---")
+            st.markdown("### 📋 Tabelas Analíticas de Variação Mensal")
+            with st.expander("Ver Tabela Comparativa de Categorias Principais"):
+                st.dataframe(comp_cat, use_container_width=True)
+            with st.expander("Ver Tabela Comparativa de Clientes"):
+                st.dataframe(comp_cli, use_container_width=True)
+            with st.expander("Ver Tabela Comparativa de Solicitações Específicas"):
+                st.dataframe(comp_sol, use_container_width=True)
+
+    else:
+        # ---------------------------------------------
+        # HISTÓRICO MULTIMENSAL E MATRIZ DE AUDITORIA
+        # ---------------------------------------------
+        st.markdown("### 📅 Balanço e Auditoria Mensal (Histórico de até 12 meses)")
+        st.write("Faça o upload de múltiplos arquivos mensais para consolidar o histórico da operação.")
+
+        arquivos_hist = st.file_uploader(
+            "Upload de múltiplos arquivos mensais",
+            type=["xls", "xlsx", "xlsm", "csv"],
+            accept_multiple_files=True,
+            key="uploader_historico_multi"
+        )
+
+        if not arquivos_hist:
+            st.info("ℹ️ **Aguardando arquivos.** Carregue dois ou mais arquivos simultaneamente para gerar a matriz histórica e gráficos de tendência.")
+        else:
+            st.markdown("#### 📆 Confirmação dos Períodos de Cada Arquivo")
+            st.caption("Abaixo estão os períodos detectados automaticamente. Você pode corrigi-los manualmente se necessário:")
+            
+            sorted_months_info = []
+            for idx, f in enumerate(arquivos_hist):
+                mes_det, ano_det = detectar_mes_arquivo(f.name)
+                with st.expander(f"📁 {f.name}", expanded=True):
+                    col_det_name, col_m, col_a = st.columns([2, 1, 1])
+                    col_det_name.write(f"Tamanho: `{f.size / 1024:.1f} KB`")
+                    
+                    with col_m:
+                        mes_idx = (mes_det - 1) if (mes_det and 1 <= mes_det <= 12) else 0
+                        mes_sel = st.selectbox("Mês", options=list_meses, index=mes_idx, key=f"hist_m_{idx}_{f.name}")
+                    with col_a:
+                        ano_idx = list_anos.index(ano_det) if (ano_det and ano_det in list_anos) else list_anos.index(datetime.date.today().year)
+                        ano_sel = st.selectbox("Ano", options=list_anos, index=ano_idx, key=f"hist_a_{idx}_{f.name}")
+                        
+                    mes_num = list_meses.index(mes_sel) + 1
+                    label = f"{mes_sel[:3]}/{ano_sel}"  # ex: "Mai/2026"
+                    periodo_ordem = gerar_periodo_ordem(mes_sel, ano_sel)
+                    
+                    sorted_months_info.append({
+                        "file": f,
+                        "mes_num": mes_num,
+                        "ano": ano_sel,
+                        "label": label,
+                        "periodo_ordem": periodo_ordem,
+                        "sort_key": (ano_sel, mes_num)
+                    })
+            # Verificar duplicidade de período (Mês/Ano)
+            labels_set = set()
+            duplicates = []
+            for item in sorted_months_info:
+                lbl = item["label"]
+                if lbl in labels_set:
+                    duplicates.append(lbl)
+                else:
+                    labels_set.add(lbl)
+            
+            if duplicates:
+                st.error(f"❌ **Erro de Duplicidade:** Foram detectados múltiplos arquivos marcados para o mesmo período: **{', '.join(set(duplicates))}**. Ajuste a confirmação de Mês/Ano de cada arquivo nos painéis acima para que não haja duplicatas.")
+            else:
+                # Ordenar cronologicamente
+                sorted_months_info = sorted(sorted_months_info, key=lambda x: x["sort_key"])
+
+                # Processar cada base
+                historico_data = []
+                matrix_dict = {}
+                df_historico_bases = {}
+
+                progress_bar = st.progress(0)
+                for idx, item in enumerate(sorted_months_info):
+                    label = item["label"]
+                    f = item["file"]
+                    
+                    try:
+                        df_m_clean, col_m = carregar_e_tratar_base(f, f"Histórico {label}")
+                        # Filtrar se ativado
+                        df_m_filtered = aplicar_filtros_globais(df_m_clean, col_m["col_abertura"]) if aplicar_anterior else df_m_clean
+                        
+                        df_historico_bases[label] = df_m_filtered
+                        ind_m = calcular_indicadores(df_m_filtered)
+                        
+                        historico_data.append({
+                            "Período": label,
+                            "Periodo Ordem": item["periodo_ordem"],
+                            "Total de Chamados": ind_m["total_chamados"],
+                            "Dentro do SLA": ind_m["dentro_sla"],
+                            "Fora do SLA": ind_m["fora_sla"],
+                            "% Dentro do SLA": ind_m["percentual_dentro_sla"],
+                            "Tratados até 72h": ind_m["ate_72h"],
+                            "Tratados acima de 72h": ind_m["acima_72h"],
+                            "Em aberto / Em tratamento": ind_m["em_aberto"],
+                            "SLA não informado": ind_m["sla_nao_informado"],
+                            "FCR até 1h": ind_m["fcr_1h"],
+                            "% FCR 1h": ind_m["percentual_fcr_1h"]
+                        })
+                        
+                        matrix_dict[label] = {
+                            "Total de chamados": ind_m["total_chamados"],
+                            "Dentro do SLA": ind_m["dentro_sla"],
+                            "Fora do SLA": ind_m["fora_sla"],
+                            "% dentro do SLA": f"{ind_m['percentual_dentro_sla']:.1f}%",
+                            "Tratados até 72h": ind_m["ate_72h"],
+                            "Tratados acima de 72h": ind_m["acima_72h"],
+                            "Em aberto / Em tratamento": ind_m["em_aberto"],
+                            "SLA não informado": ind_m["sla_nao_informado"],
+                            "FCR até 1h": ind_m["fcr_1h"],
+                            "% FCR até 1h": f"{ind_m['percentual_fcr_1h']:.1f}%",
+                            "Top Categoria": ind_m["categoria_top"],
+                            "Top Cliente": ind_m["cliente_top"]
+                        }
+                    except Exception as ex:
+                        st.error(f"Erro ao processar o arquivo {f.name}: {str(ex)}")
+                    
+                    progress_bar.progress((idx + 1) / len(sorted_months_info))
+                progress_bar.empty()
+
+                if historico_data:
+                    df_historico_resumo = pd.DataFrame(historico_data)
+                    df_matrix = pd.DataFrame(matrix_dict)
+
+                    # Se FCR não estiver disponível no histórico, remover as linhas da Matriz de Auditoria
+                    if df_historico_resumo["FCR até 1h"].sum() == 0:
+                        df_matrix = df_matrix.drop(index=["FCR até 1h", "% FCR até 1h"], errors="ignore")
+
+                    # Salvar no session_state para exportação Excel
+                    st.session_state["df_matrix_historico"] = df_matrix
+                    st.session_state["df_resumo_historico"] = df_historico_resumo
+                    st.session_state["df_historico_bases"] = df_historico_bases
+
+                if filtros_ativos:
+                    st.warning("⚠️ **Atenção: esta comparação está com filtros aplicados. Os números representam um recorte da base, não o total geral dos meses.**")
+                    st.markdown("* **Histórico:** recorte aplicado")
+
+                # Mostrar Gráficos Históricos
+                st.markdown("---")
+                st.markdown("### 📈 Gráficos de Evolução Histórica")
+                
+                st.plotly_chart(plot_historical_line(df_historico_resumo, "Período", "Total de Chamados", "Volume Total de Chamados por Mês"), use_container_width=True)
+                
+                g_h_sla, g_h_72h = st.columns(2)
+                with g_h_sla:
+                    st.plotly_chart(plot_historical_line(df_historico_resumo, "Período", "% Dentro do SLA", "Evolução do SLA % por Mês", "percent"), use_container_width=True)
+                with g_h_72h:
+                    df_historico_resumo["% Tratado até 72h"] = (df_historico_resumo["Tratados até 72h"] / (df_historico_resumo["Tratados até 72h"] + df_historico_resumo["Tratados acima de 72h"]) * 100).fillna(0)
+                    st.plotly_chart(plot_historical_line(df_historico_resumo, "Período", "% Tratado até 72h", "Evolução de Chamados Tratados em até 72h (%)", "percent"), use_container_width=True)
+
+                g_h_fora, g_h_ab = st.columns(2)
+                with g_h_fora:
+                    st.plotly_chart(plot_historical_bar(df_historico_resumo, "Período", "Fora do SLA", "Chamados Fora do SLA por Mês", "#EF4444"), use_container_width=True)
+                with g_h_ab:
+                    st.plotly_chart(plot_historical_bar(df_historico_resumo, "Período", "Em aberto / Em tratamento", "Chamados em Aberto por Mês", "#F59E0B"), use_container_width=True)
+
+                # Mostrar FCR se houver
+                if df_historico_resumo["FCR até 1h"].sum() > 0:
+                    st.plotly_chart(plot_historical_line(df_historico_resumo, "Período", "% FCR 1h", "Evolução do First Call Resolution (%)", "percent"), use_container_width=True)
+
+                # Tabela Matriz de Auditoria
+                st.markdown("---")
+                st.markdown("### 📋 Tabela Matriz de Auditoria Mensal")
+                st.dataframe(df_matrix, use_container_width=True)
+
+
+# ---------------------------------------------
+# ABA 3: ATENDIMENTO POR RESPONSÁVEL
+# ---------------------------------------------
+with tab_resp:
+    st.markdown("### 👥 Produtividade e Qualidade por Responsável/Analista")
+    
+    if colunas_atual["is_responsavel_aproximado"]:
+        st.warning(
+            f"⚠️ **Aproximação Ativada:** Não foi localizada na planilha uma coluna explícita de encerramento "
+            f"(como *Finalizado por*, *Encerrado por* ou *Atendente finalizador*). "
+            f"Usando a coluna geral **'{colunas_atual['col_responsavel']}'** como aproximação para os indicadores."
+        )
+    else:
+        st.success(f"✔️ **Indicadores Baseados em Fechamento:** Coluna oficial de finalizador detectada e utilizada: **'{colunas_atual['col_responsavel']}'**.")
+
+    st.write("##### Métricas Consolidadas de Atendimento")
+    st.dataframe(df_resp_atual, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 📈 Análises Gráficas por Analista")
+    
+    g1, g2 = st.columns(2)
+    with g1:
+        st.plotly_chart(
+            plot_stacked_bar_status(
+                df_atual_filtered,
+                "Responsável Análise",
+                "Status SLA",
+                "Distribuição de SLA por Analista (Top 10)",
+                COLOR_MAP_SLA,
+                10
+            ),
+            use_container_width=True
+        )
+    with g2:
+        st.plotly_chart(
+            plot_stacked_bar_status(
+                df_atual_filtered,
+                "Responsável Análise",
+                "Status 72h",
+                "Distribuição de 72h por Analista (Top 10)",
+                COLOR_MAP_72H,
+                10
+            ),
+            use_container_width=True
+        )
+
+    g3, g4 = st.columns(2)
+    with g3:
+        df_tempo = df_resp_atual[df_resp_atual["Finalizados"] > 0].copy()
+        if not df_tempo.empty:
+            st.plotly_chart(
+                plot_simple_vertical_bar(
+                    df_tempo.head(10),
+                    "Responsável",
+                    "Tempo Médio (Horas)",
+                    "Tempo Médio de Atendimento em Horas (Top 10)"
+                ),
+                use_container_width=True
+            )
+        else:
+            st.info("Nenhum chamado finalizado para calcular tempo médio.")
+    with g4:
+        st.plotly_chart(
+            plot_simple_vertical_bar(
+                df_resp_atual.head(10),
+                "Responsável",
+                "Atribuídos",
+                "Volume de Chamados Atribuídos (Top 10)"
+            ),
+            use_container_width=True
+        )
+
+    # Ranking de qualidade (SLA %) - Exigência de pelo menos 5 chamados finalizados
+    st.markdown("---")
+    st.markdown("### 🏆 Top Performance de SLA (Qualidade)")
+    st.caption("Considera apenas os profissionais com pelo menos 5 chamados finalizados para garantir relevância estatística.")
+    
+    df_rank_qualidade = df_resp_atual[df_resp_atual["Finalizados"] >= 5].copy()
+    if df_rank_qualidade.empty:
+        st.info("ℹ️ **Métricas insuficientes:** Nenhum analista atingiu o volume mínimo de 5 chamados finalizados neste período filtrado.")
+    else:
+        df_rank_qualidade = df_rank_qualidade.sort_values("% Dentro SLA", ascending=False)
+        st.plotly_chart(
+            plot_simple_vertical_bar(
+                df_rank_qualidade.head(10),
+                "Responsável",
+                "% Dentro SLA",
+                "Top Analistas por % Dentro do SLA (Mínimo 5 Finalizados)",
+                color="#10B981"
+            ),
+            use_container_width=True
+        )
+
+
+# ---------------------------------------------
+# ABA 4: CLIENTES E CATEGORIAS
+# ---------------------------------------------
+with tab_cli:
+    st.markdown("### 🏢 Análise Detalhada de Clientes e Categorias de Serviços")
+    
+    c_col1, c_col2 = st.columns(2)
+    with c_col1:
+        st.markdown("##### Ranking de Clientes com mais Chamados")
+        st.dataframe(resumo_clientes_atual, use_container_width=True)
+    with c_col2:
+        st.markdown("##### Ranking das Categorias Principais")
+        st.dataframe(resumo_categorias_atual, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("##### Ranking de Solicitações Específicas (Tipo + Item)")
+    st.dataframe(resumo_solicitacoes_atual, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 🔍 Análise de Gargalos e Causas Raiz")
+    
+    g_col1, g_col2 = st.columns(2)
+    with g_col1:
+        st.markdown("##### Principal Causa de SLA Vencido")
+        df_vencidos = df_atual_filtered[df_atual_filtered["Status SLA"] == "Fora do SLA"]
+        if df_vencidos.empty:
+            st.success("🎉 **Excelente!** Nenhum chamado fora do SLA foi registrado no período selecionado.")
+        else:
+            st.plotly_chart(
+                plot_horizontal_bar(
+                    df_vencidos,
+                    "Solicitação Específica",
+                    "Top Ocorrências Fora do SLA por Solicitação Específica",
+                    10,
+                    "#EF4444"
+                ),
+                use_container_width=True
+            )
+            
+    with g_col2:
+        st.markdown("##### Principal Causa de Atraso Operacional (Acima de 72h)")
+        df_atrasados = df_atual_filtered[df_atual_filtered["Status 72h"] == "Tratado acima de 72h"]
+        if df_atrasados.empty:
+            st.success("🎉 **Excelente!** Nenhum chamado ultrapassou 72 horas para encerramento no período.")
+        else:
+            st.plotly_chart(
+                plot_horizontal_bar(
+                    df_atrasados,
+                    "Solicitação Específica",
+                    "Top Ocorrências Atrasadas (>72h) por Solicitação Específica",
+                    10,
+                    "#F59E0B"
+                ),
+                use_container_width=True
+            )
+
+
+# ---------------------------------------------
+# ABA 5: QUALIDADE DA BASE (AUDITORIA)
+# ---------------------------------------------
+with tab_qual:
+    st.markdown("### 🔍 Qualidade dos Dados e Auditoria de Registros")
+    st.write("Verifique a qualidade das informações importadas e a integridade dos cálculos do dashboard.")
+
+    total_importados = len(df_atual_clean)
+    
+    col_emp = colunas_atual["col_empresa"]
+    col_ab = colunas_atual["col_abertura"]
+    col_enc = colunas_atual["col_encerramento"]
+    col_ven = colunas_atual["col_vencimento"]
+
+    # Contagens
+    sem_cliente = int((df_atual_clean["Cliente Análise"] == "Não informado").sum())
+    sem_abertura = int(df_atual_clean[col_ab].isna().sum())
+    sem_encerramento = int(df_atual_clean[col_enc].isna().sum())
+    sem_vencimento = int(df_atual_clean[col_ven].isna().sum()) if col_ven else total_importados
+    sem_responsavel = int((df_atual_clean["Responsável Análise"] == "Não informado").sum())
+
+    # Exibição em cards
+    aq1, aq2, aq3 = st.columns(3)
+    with aq1:
+        metric_card("Total Importado (Raw)", f"{total_importados:,}".replace(",", "."), card_type="blue")
+    with aq2:
+        metric_card("Registros Sem Cliente", f"{sem_cliente:,}", card_type="orange" if sem_cliente > 0 else "green")
+    with aq3:
+        metric_card("Registros Sem Abertura", f"{sem_abertura:,}", card_type="red" if sem_abertura > 0 else "green")
+
+    aq4, aq5, aq6 = st.columns(3)
+    with aq4:
+        metric_card("Registros Sem Encerramento", f"{sem_encerramento:,}", card_type="orange" if sem_encerramento > 0 else "green")
+    with aq5:
+        metric_card("Registros Sem Vencimento/SLA", f"{sem_vencimento:,}", card_type="orange" if sem_vencimento > 0 else "green")
+    with aq6:
+        metric_card("Registros Sem Responsável", f"{sem_responsavel:,}", card_type="orange" if sem_responsavel > 0 else "green")
+
+    # Quadro de Auditoria e Reconciliação Matemática
+    st.markdown("---")
+    st.markdown("### 🧩 Reconciliação Matemática de Totais (Base Filtrada)")
+    st.write("Garantia de que os totais operacionais estão perfeitamente consistentes em todos os resumos e tabelas.")
+
+    n_filt = len(df_atual_filtered)
+    soma_sla = int(resumo_sla_atual["Chamados"].sum())
+    soma_72h = int(resumo_72h_atual["Chamados"].sum())
+
+    fcr_exist = (ind_atual["fcr_tratado"] > 0)
+    if fcr_exist:
+        resumo_fcr_atual = df_atual_filtered["Status FCR 1h"].value_counts().reindex(
+            ["Resolvido até 1h", "Resolvido acima de 1h", "FCR não informado", "Em aberto / Em tratamento"], 
+            fill_value=0
+        ).reset_index(name="Chamados")
+        soma_fcr = int(resumo_fcr_atual["Chamados"].sum())
+        
+        rec_col1, rec_col2, rec_col3, rec_col4 = st.columns(4)
+        rec_col1.metric("Registros na Base Filtrada", n_filt)
+        rec_col2.metric("Soma das Categorias SLA", soma_sla)
+        rec_col3.metric("Soma das Categorias 72h", soma_72h)
+        rec_col4.metric("Soma das Categorias FCR", soma_fcr)
+        
+        audit_pass = (n_filt == soma_sla == soma_72h == soma_fcr)
+    else:
+        rec_col1, rec_col2, rec_col3 = st.columns(3)
+        rec_col1.metric("Registros na Base Filtrada", n_filt)
+        rec_col2.metric("Soma das Categorias SLA", soma_sla)
+        rec_col3.metric("Soma das Categorias 72h", soma_72h)
+        
+        audit_pass = (n_filt == soma_sla == soma_72h)
+        soma_fcr = n_filt
+
+    if audit_pass:
+        st.success("🟢 **Status de Auditoria: OK** - Todos os totais calculados coincidem perfeitamente. Nenhuma divergência detectada.")
+    else:
+        st.error(
+            f"🔴 **Status de Auditoria: ATENÇÃO** - Existe uma divergência matemática entre os totais! "
+            f"Base: {n_filt} | SLA: {soma_sla} | 72h: {soma_72h}" + (f" | FCR: {soma_fcr}" if fcr_exist else "") + 
+            ". Verifique se há registros nulos não tratados."
+        )
+
+
+# ---------------------------------------------
+# ABA 6: BASE ANALÍTICA (COM DOWNLOAD)
+# ---------------------------------------------
+with tab_base:
+    st.markdown("### 📂 Base Analítica Tratada e Exportações")
+    st.write("Visualize a base final consolidada com todos os tratamentos aplicados e faça a exportação.")
+
+    # Exibição do Dataframe Filtrado
+    st.write("##### Base de Dados Filtrada")
+    st.dataframe(df_atual_filtered, use_container_width=True)
+
+    # Botão de Exportação Consolidada
+    st.markdown("---")
+    st.markdown("### 📥 Download do Painel Completo em Excel")
+    st.write("O arquivo gerado conterá a base tratada filtrada e todas as tabelas de resumo e frequência organizadas em abas.")
+
+    # Preparar dicionário com todos os dados calculados da base atual filtrada
+    resultado_atual_dict = {
+        "df": df_atual_filtered,
+        "indicadores": ind_atual,
+        "resumo_clientes": resumo_clientes_atual,
+        "resumo_categorias": resumo_categorias_atual,
+        "resumo_solicitacoes": resumo_solicitacoes_atual,
+        "resumo_sla": resumo_sla_atual,
+        "resumo_72h": resumo_72h_atual,
+        "df_responsaveis": df_resp_atual
+    }
+
+    # Anexar informações do mês anterior e comparativos se existir no session_state
+    resultado_anterior_dict = st.session_state.get("resultado_anterior")
+    label_mes_anterior_val = st.session_state.get("label_mes_anterior", "Mês anterior")
+    arquivo_anterior_nome = st.session_state.get("arquivo_anterior_nome", "")
+
+    if resultado_anterior_dict is not None:
+        resultado_atual_dict["comparativo_indicadores"] = montar_comparativo_indicadores(ind_atual, resultado_anterior_dict["indicadores"])
+        resultado_atual_dict["comp_clientes"] = comparar_frequencias(df_atual_filtered, resultado_anterior_dict["df"], "Cliente Análise", "Cliente")
+        resultado_atual_dict["comp_categorias"] = comparar_frequencias(df_atual_filtered, resultado_anterior_dict["df"], "Categoria Principal", "Categoria Principal")
+        resultado_atual_dict["comp_solicitacoes"] = comparar_frequencias(df_atual_filtered, resultado_anterior_dict["df"], "Solicitação Específica", "Solicitação Específica")
+
+    try:
+        excel_bin = gerar_excel_resultado(
+            resultado_atual_dict, 
+            resultado_anterior_dict,
+            label_mes_atual=label_mes_atual,
+            label_mes_anterior=label_mes_anterior_val,
+            df_matrix=st.session_state.get("df_matrix_historico"),
+            df_historico=st.session_state.get("df_resumo_historico"),
+            df_historico_bases=st.session_state.get("df_historico_bases")
+        )
+        
+        st.download_button(
+            label="📥 Baixar Painel Completo em Excel",
+            data=excel_bin,
+            file_name="painel_chamados_consolidado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as e:
+        st.error(f"Erro ao gerar planilha Excel de download: {str(e)}")
