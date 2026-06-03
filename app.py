@@ -159,7 +159,7 @@ aplicar_anterior = (aplicar_anterior_sel == "Sim")
 # =========================
 # APLICAÇÃO DOS FILTROS GLOBAIS
 # =========================
-def aplicar_filtros_globais(df, col_abertura):
+def aplicar_filtros_globais(df, col_abertura, ignorar_datas=False):
     df_filt = df.copy()
     if df_filt.empty:
         return df_filt
@@ -177,11 +177,13 @@ def aplicar_filtros_globais(df, col_abertura):
     if status_72h_sel:
         df_filt = df_filt[df_filt["Status 72h"].isin(status_72h_sel)]
         
-    if col_abertura and col_abertura in df_filt.columns:
-        col_dt = pd.to_datetime(df_filt[col_abertura])
-        df_filt = df_filt[col_dt.notna() & (col_dt.dt.date >= data_inicio) & (col_dt.dt.date <= data_fim)]
+    if not ignorar_datas:
+        if col_abertura and col_abertura in df_filt.columns:
+            col_dt = pd.to_datetime(df_filt[col_abertura])
+            df_filt = df_filt[col_dt.notna() & (col_dt.dt.date >= data_inicio) & (col_dt.dt.date <= data_fim)]
         
     return df_filt
+
 
 
 # Obter base filtrada única do mês atual
@@ -344,11 +346,18 @@ with tab_comp:
 
             label_mes_anterior = gerar_label_mes(mes_sel_ant, ano_sel_ant)
 
-            # Filtrar base anterior se ativado
+            df_atual_bruto = df_atual_clean
+            df_atual_filtrado = df_atual_filtered
+            df_anterior_bruto = df_anterior_clean
+            
+            # A base anterior usada na comparação ignora o filtro de período de abertura do mês atual
             if aplicar_anterior:
-                df_anterior_filtered = aplicar_filtros_globais(df_anterior_clean, colunas_anterior["col_abertura"])
+                df_anterior_usado_na_comparacao = aplicar_filtros_globais(df_anterior_bruto, colunas_anterior["col_abertura"], ignorar_datas=True)
             else:
-                df_anterior_filtered = df_anterior_clean
+                df_anterior_usado_na_comparacao = df_anterior_bruto
+
+            df_anterior_filtrado = df_anterior_usado_na_comparacao
+            df_anterior_filtered = df_anterior_filtrado
 
             ind_anterior = calcular_indicadores(df_anterior_filtered)
 
@@ -363,6 +372,14 @@ with tab_comp:
             st.session_state["label_mes_anterior"] = label_mes_anterior
             st.session_state["arquivo_anterior_nome"] = arquivo_anterior.name
 
+            # AVISO DE RECORTE SE FILTROS ATIVOS
+            filtros_ativos = bool(
+                clientes_sel or categorias_sel or solicitacoes_sel or 
+                responsaveis_sel or status_sla_sel or status_72h_sel or
+                (data_inicio != min_date_val or data_fim != max_date_val)
+            )
+            label_linhas = "linhas após filtros" if filtros_ativos else "linhas utilizadas na comparação"
+
             # -------------------
             # CABEÇALHO EXECUTIVO
             # -------------------
@@ -374,15 +391,15 @@ with tab_comp:
                         <h4 style="margin-top: 0; color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Mês Anterior ({label_mes_anterior})</h4>
                         <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Arquivo:</strong> <span style="font-family: monospace;">{arquivo_anterior.name}</span></div>
                         <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Mês selecionado:</strong> {label_mes_anterior}</div>
-                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Linhas brutas:</strong> {len(df_anterior_clean):,}</div>
-                        <div style="font-size: 13px; color: #64748B;"><strong>Linhas filtradas:</strong> {len(df_anterior_filtered):,}</div>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>{label_mes_anterior} linhas brutas:</strong> {len(df_anterior_clean):,}</div>
+                        <div style="font-size: 13px; color: #64748B;"><strong>{label_mes_anterior} {label_linhas}:</strong> {len(df_anterior_filtered):,}</div>
                     </div>
                     <div style="flex: 1; min-width: 250px; background-color: #FFFFFF; padding: 16px; border-radius: 6px; border: 1px solid #E2E8F0;">
                         <h4 style="margin-top: 0; color: #1F4E78; font-size: 14px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Mês Atual ({label_mes_atual})</h4>
                         <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Arquivo:</strong> <span style="font-family: monospace;">{arquivo_atual.name}</span></div>
                         <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Mês selecionado:</strong> {label_mes_atual}</div>
-                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>Linhas brutas:</strong> {len(df_atual_clean):,}</div>
-                        <div style="font-size: 13px; color: #64748B;"><strong>Linhas filtradas:</strong> {len(df_atual_filtered):,}</div>
+                        <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;"><strong>{label_mes_atual} linhas brutas:</strong> {len(df_atual_clean):,}</div>
+                        <div style="font-size: 13px; color: #64748B;"><strong>{label_mes_atual} {label_linhas}:</strong> {len(df_atual_filtered):,}</div>
                     </div>
                 </div>
                 <div style="margin-top: 16px; font-size: 11px; color: #94A3B8;">
@@ -391,14 +408,8 @@ with tab_comp:
             </div>
             """, unsafe_allow_html=True)
 
-            # AVISO DE RECORTE SE FILTROS ATIVOS
-            filtros_ativos = bool(
-                clientes_sel or categorias_sel or solicitacoes_sel or 
-                responsaveis_sel or status_sla_sel or status_72h_sel or
-                (data_inicio != min_date_val or data_fim != max_date_val)
-            )
             if filtros_ativos:
-                st.warning("⚠️ **Atenção: esta comparação está com filtros aplicados. Os números representam um recorte da base, não o total geral dos meses.**")
+                st.warning("⚠️ **Atenção: comparação exibida com filtros aplicados. Os números representam um recorte da base.**")
                 st.markdown(f"""
                 * **Base atual:** {len(df_atual_filtered)} de {len(df_atual_clean)} chamados
                 * **Base anterior:** {len(df_anterior_filtered)} de {len(df_anterior_clean)} chamados
@@ -755,7 +766,7 @@ with tab_comp:
                     try:
                         df_m_clean, col_m = carregar_e_tratar_base(f, f"Histórico {label}")
                         # Filtrar se ativado
-                        df_m_filtered = aplicar_filtros_globais(df_m_clean, col_m["col_abertura"]) if aplicar_anterior else df_m_clean
+                        df_m_filtered = aplicar_filtros_globais(df_m_clean, col_m["col_abertura"], ignorar_datas=True) if aplicar_anterior else df_m_clean
                         
                         df_historico_bases[label] = df_m_filtered
                         ind_m = calcular_indicadores(df_m_filtered)
