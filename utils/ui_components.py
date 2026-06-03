@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 
 def injetar_css_cards():
     """
